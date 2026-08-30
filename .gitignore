@@ -1,0 +1,12 @@
+/bs_data/
+config.yaml
+config.yaml.bak
+cookies.txt
+*.cookies.txt
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+read.md

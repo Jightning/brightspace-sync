@@ -1,0 +1,63 @@
+# Brightspace host, this one is for Purdue
+base_url: https://purdue.brightspace.com
+
+# Where the browser cookies are read from
+# auto | chrome | edge | brave | firefox | safari | cookies_txt
+browser: chrome
+
+# Which profile folder to read (blank = default profile)
+# Run `python -m brightspace_sync doctor` to list the profiles.
+# Ignored unless browser is chrome, edge, or brave.
+chrome_profile:
+
+# Categories of data to pull -------
+include:
+  content: true
+  grades: true
+  news: true
+  assignments: true
+  calendar: false
+  # Embedded lecture videos when true
+  # When false you still get a working .url shortcut and a .html for each video.
+  videos: false
+
+# Course selection ------------------
+courses:
+  # allowlist (only courses matched below) | all (every course except `ignore`)
+  mode: all
+
+  # Match by exact org-unit id (`id`) or course name/code (`match`, can be a substring)
+  # run `list` to see the options
+  allow:
+    # - match: "ECE 27000"
+    # - match: "ECE 36800"
+    # - id: 1234567
+
+  # Always dropped, even in all
+  ignore:
+    # - match: "Sandbox"
+
+  # Defines how the course data is stored
+  map:
+    # # rename one course's folder
+    # - name: "ECE 270 - Digital System Design"
+    #   match: "ECE 27000"
+
+    # merge several courses into one folder (each course gets its own subfolder)
+    # - name: "ECE 200 - Linear Circuits"
+    #   match: ["ECE 20001", "ECE 20007"]
+    #   subfolders:
+    #     "ECE 20001": "Lecture"
+    #     "ECE 20007": "Lab"
+
+
+
+# Local folder for everything written by the program
+# .gitignore this
+data_dir: bs_data
+# courses_dir: courses
+# cookies_txt_path: cookies.txt
+
+request_delay_seconds: 0.4   # delay between API calls
+max_retries: 4 # retries on 429 / 5xx
+prune: false # delete local files that were removed in Brightspace when true

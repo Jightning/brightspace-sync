@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OPTIONAL scheduled sync (macOS launchd).
+
+  Read the README section "Scheduling (optional)" first. The short version:
+  this only works while your browser still holds a live Brightspace session,
+  so it is a convenience, not something to rely on. When the session has
+  expired the run exits cleanly and (with --notify-on-auth-failure) pops a
+  notification telling you to open Brightspace once.
+
+  Install:
+    cp scripts/com.user.brightspace-sync.plist.example ~/Library/LaunchAgents/com.user.brightspace-sync.plist
+    # edit the two paths below if your username/paths differ
+    launchctl load  ~/Library/LaunchAgents/com.user.brightspace-sync.plist
+  Remove:
+    launchctl unload ~/Library/LaunchAgents/com.user.brightspace-sync.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.brightspace-sync</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/juan/Desktop/Projects/bs_search/scripts/run-sync.sh</string>
+    </array>
+
+    <!-- Run at 07:30 and 18:30 every day. Add/remove <dict> blocks to taste. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>30</integer></dict>
+    </array>
+
+    <!-- If the Mac was asleep at the scheduled time, run once on wake. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/juan/Desktop/Projects/bs_search/bs_data/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/juan/Desktop/Projects/bs_search/bs_data/logs/launchd.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>Nice</key>
+    <integer>5</integer>
+</dict>
+</plist>

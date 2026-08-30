@@ -1,0 +1,237 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+import yaml
+
+from .util import log
+
+CONFIG_SEARCH_PATHS = (
+    Path.cwd() / "config.yaml",
+    Path.cwd() / "bs_data" / "config.yaml",
+)
+
+_VALID_BROWSERS = {"auto", "chrome", "edge", "brave", "firefox", "safari", "cookies_txt"}
+
+# Known keys in config
+_KNOWN_TOP = {
+    "base_url", "browser", "chrome_profile", "data_dir", "courses_dir",
+    "cookies_txt_path", "request_delay_seconds", "max_retries", "prune",
+    "include", "courses",
+}
+_KNOWN_COURSES = {"mode", "allow", "ignore", "map"}
+
+
+@dataclass
+class CourseRule:
+    """A course rule defined by the user"""
+    id: int | None = None # course code
+    match: str | None = None # string to use to match with course (match if it's a substring of the course name or id)
+
+    def matches(self, *, ou_id: int, name: str, code: str) -> bool:
+        if self.id is not None:
+            return int(self.id) == int(ou_id)
+        if self.match:
+            needle = self.match.casefold()
+            return needle in (name or "").casefold() or needle in (code or "").casefold()
+        return False
+
+@dataclass
+class MapEntry:
+    """A course to folder mapping"""
+    name: str
+    selectors: list[CourseRule] = field(default_factory=list)
+    subfolders: list[tuple[CourseRule, str]] = field(default_factory=list)  # (rule, label)
+
+    def claims(self, *, ou_id: int, name: str, code: str) -> bool:
+        return any(r.matches(ou_id=ou_id, name=name, code=code) for r in self.selectors)
+
+    def subfolder_for(self, *, ou_id: int, name: str, code: str) -> str | None:
+        for rule, label in self.subfolders:
+            if rule.matches(ou_id=ou_id, name=name, code=code):
+                return label
+        return None
+
+@dataclass
+class Config:
+    # Default configs
+    base_url: str = "https://purdue.brightspace.com" # Brightspace URL to connect to
+    browser: str = "auto" # cookie source (auto tries chrome, edge, brave, firefox, safari)
+    chrome_profile: str | None = None # Chrome/Edge/Brave profile folder, e.g. "Default" or "Profile 1"
+    data_dir: Path = Path.cwd() / "bs_data" # ONE local folder that holds everything the tool writes
+    cookies_txt_path: Path = Path.cwd() / "bs_data" / "cookies.txt" # manual cookies file (browser: cookies_txt)
+    courses_dir: Path = Path.cwd() / "bs_data" / "courses" # where course content is saved
+    log_dir: Path = Path.cwd() / "bs_data" / "logs" # where the run log is written
+    request_delay_seconds: float = 0.4 # rate limiting
+    max_retries: int = 4 # number retries for http failures
+    prune: bool = False # delete local files that no longer exist in Brightspace
+    include: dict[str, bool] = field(default_factory=dict) # enabled content sections
+    courses_mode: str = "allowlist" # 'allowlist' | 'all'
+    allow: list[CourseRule] = field(default_factory=list) # courses included
+    ignore: list[CourseRule] = field(default_factory=list) # courses excluded
+    mapping: list[MapEntry] = field(default_factory=list) # folder-name / merge rules
+    source_path: Path | None = None # config file path that was loaded
+
+    # course matching
+    def wants_course(self, *, ou_id: int, name: str, code: str) -> bool:
+        if any(r.matches(ou_id=ou_id, name=name, code=code) for r in self.ignore):
+            return False
+        if self.courses_mode == "all":
+            return True
+        if any(r.matches(ou_id=ou_id, name=name, code=code) for r in self.allow):
+            return True
+        # naming a course in `map` implies you want it synced
+        return any(m.claims(ou_id=ou_id, name=name, code=code) for m in self.mapping)
+
+    def includes_section(self, key: str) -> bool:
+        return bool(self.include.get(key, False))
+
+
+def _rules(raw: list[Any] | None) -> list[CourseRule]:
+    """Parse an allow/ignore list [{id/match} | int | str]."""
+    out: list[CourseRule] = []
+
+    for item in raw or []:
+        if isinstance(item, dict):
+            out.append(CourseRule(id=item.get("id"), match=item.get("match")))
+        elif isinstance(item, bool):
+            continue
+        elif isinstance(item, int):
+            out.append(CourseRule(id=item))
+        elif isinstance(item, str):
+            out.append(CourseRule(match=item))
+    return out
+
+def _selectors(item: dict) -> list[CourseRule]:
+    """`match`/`id` in a map entry: each may be a scalar or a list."""
+    out: list[CourseRule] = []
+
+    m = item.get("match")
+    for v in (m if isinstance(m, list) else [m] if m else []):
+        out.append(CourseRule(match=str(v)))
+
+    i = item.get("id")
+    for v in (i if isinstance(i, list) else [i] if i is not None else []):
+        out.append(CourseRule(id=int(v)))
+
+    return out
+
+
+def _map_entries(raw: Any) -> list[MapEntry]:
+    out: list[MapEntry] = []
+    for item in raw or []:
+        if not isinstance(item, dict) or not item.get("name"):
+            log.warning("courses.map: skipping entry without a `name`: %r", item)
+            continue
+        subs: list[tuple[CourseRule, str]] = []
+        for key, label in (item.get("subfolders") or {}).items():
+            subs.append((CourseRule(match=str(key)), str(label)))
+        out.append(MapEntry(name=str(item["name"]),
+                            selectors=_selectors(item),
+                            subfolders=subs))
+    return out
+
+
+def find_config(path_str: str | None) -> Path:
+    if path_str:
+        p = Path(path_str).expanduser().resolve()
+
+        if not p.is_file():
+            raise SystemExit(f"config file not found: {p}")
+        
+        return p
+    
+    for candidate in CONFIG_SEARCH_PATHS:
+        if candidate.is_file():
+            return candidate.resolve()
+        
+    raise SystemExit("No config.yaml found. Copy config.example.yaml to ./config.yaml and edit.")
+
+
+def _resolve_under(value: str, data_dir: Path, *, label: str) -> Path:
+    """
+    Relative path is relative to data_dir.
+    Absolute or ~ path is flagged.
+    """
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        try:
+            path.relative_to(data_dir)
+        except ValueError:
+            log.warning("%s (%s) is outside data_dir (%s).", label, path, data_dir)
+        return path
+    
+    return (data_dir / path).resolve()
+
+
+def load_config(path_str: str | None = None) -> Config:
+    path = find_config(path_str)
+    with path.open("r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    if not isinstance(raw, dict):
+        raise SystemExit(f"{path}: top level must be a mapping")
+
+    unknown = sorted(set(raw) - _KNOWN_TOP)
+    if unknown:
+        log.warning("%s: unrecognized key(s) %s - looks like an older template. "
+                    "Regenerate it from config.example.yaml.", path.name, unknown)
+
+    # Loading all the configs ------
+    cfg = Config()
+    cfg.source_path = path
+    cfg.base_url = str(raw.get("base_url", cfg.base_url)).rstrip("/")
+    if not cfg.base_url.startswith("https://"):
+        raise SystemExit(f"{path}: base_url must be https://")
+
+    cfg.browser = str(raw.get("browser", cfg.browser)).lower()
+    if cfg.browser not in _VALID_BROWSERS:
+        raise SystemExit(f"{path}: browser must be one of {sorted(_VALID_BROWSERS)}")
+    cp = raw.get("chrome_profile")
+    cfg.chrome_profile = str(cp) if cp else None
+
+    dd = Path(str(raw.get("data_dir", "bs_data"))).expanduser()
+    if not dd.is_absolute():
+        dd = path.parent / dd
+    cfg.data_dir = dd.resolve()
+    cfg.log_dir = cfg.data_dir / "logs"
+    cfg.cookies_txt_path = (
+        _resolve_under(str(raw["cookies_txt_path"]), cfg.data_dir, label="cookies_txt_path")
+        if "cookies_txt_path" in raw else cfg.data_dir / "cookies.txt"
+    )
+    cfg.courses_dir = (
+        _resolve_under(str(raw["courses_dir"]), cfg.data_dir, label="courses_dir")
+        if "courses_dir" in raw else cfg.data_dir / "courses"
+    )
+
+    cfg.request_delay_seconds = float(raw.get("request_delay_seconds", cfg.request_delay_seconds))
+    cfg.max_retries = int(raw.get("max_retries", cfg.max_retries))
+    cfg.prune = bool(raw.get("prune", cfg.prune))
+
+    inc = raw.get("include") or {}
+    cfg.include = {
+        "content": bool(inc.get("content", True)),
+        "grades": bool(inc.get("grades", True)),
+        "news": bool(inc.get("news", True)),
+        "assignments": bool(inc.get("assignments", True)),
+        "calendar": bool(inc.get("calendar", False)),
+        "videos": bool(inc.get("videos", False)),
+    }
+
+    courses: dict[Any, list[Any]] | None = raw.get("courses") or {}
+    unknown_c = sorted(set(courses) - _KNOWN_COURSES)
+    if unknown_c:
+        log.warning("%s: courses.%s not recognized", path.name, unknown_c)
+    cfg.courses_mode = str(courses.get("mode", cfg.courses_mode)).lower()
+    if cfg.courses_mode not in {"allowlist", "all"}:
+        raise SystemExit(f"{path}: courses.mode must be 'allowlist' or 'all'")
+    cfg.allow = _rules(courses.get("allow"))
+    cfg.ignore = _rules(courses.get("ignore"))
+    cfg.mapping = _map_entries(courses.get("map"))
+
+    if cfg.courses_mode == "allowlist" and not cfg.allow and not cfg.mapping:
+        log.warning("courses.mode is 'allowlist' but nothing is listed under "
+                    "courses.allow / courses.map - nothing will sync. "
+                    "Run `brightspace_sync list`.")
+
+    return cfg
