@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk
 
 
@@ -25,12 +26,18 @@ def install(root: tk.Misc) -> dict:
         "ok": "#7bd88f" if dark else "#1e7e34",
         "accent": "#8ab4f8" if dark else "#1a63d8",
     }
+    try:
+        family = tkfont.nametofont("TkDefaultFont").actual("family")
+    except tk.TclError:
+        family = "TkDefaultFont"
+
     st = ttk.Style(root)
-    base = st.lookup("TLabel", "font") or "TkDefaultFont"
-    st.configure("Heading.TLabel", font=(base, 15, "bold"), foreground=pal["fg"])
-    st.configure("Sub.TLabel", font=(base, 12, "bold"), foreground=pal["fg"])
+    st.configure("Heading.TLabel", font=(family, 16, "bold"), foreground=pal["fg"])
+    st.configure("Sub.TLabel", font=(family, 13, "bold"), foreground=pal["fg"])
     st.configure("Muted.TLabel", foreground=pal["muted"])
     st.configure("Err.TLabel", foreground=pal["err"])
     st.configure("OK.TLabel", foreground=pal["ok"])
     st.configure("Disclosure.TButton", anchor="w")
+    # macOS renders the native group-box caption tiny; make section titles read as headers.
+    st.configure("TLabelframe.Label", font=(family, 13, "bold"), foreground=pal["fg"])
     return pal

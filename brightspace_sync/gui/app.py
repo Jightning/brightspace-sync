@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import tkinter as tk
@@ -12,6 +13,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from ..config import default_config_path, find_config, load_config, save_config
+from ..util import log
 from .course_editor import CourseEditor
 from .model import SetupModel
 from .tasks import ConnectWorker, SyncWorker, attach_log, detach_log
@@ -95,16 +97,16 @@ class App(tk.Tk):
         self.connect = ttk.Frame(self._container, padding=20)
         ttk.Label(self.connect, text="Step 1 — Connect to Brightspace",
                   style="Heading.TLabel").pack(anchor="w")
-        ttk.Label(self.connect, justify="left", wraplength=560, style="Muted.TLabel",
-                  text="This uses the Brightspace login your web browser already has. "
-                       "You are not asked for a password and nothing is stored. "
-                       "Make sure you're signed in to Brightspace in that browser first.").pack(
-            anchor="w", pady=(4, 16))
+        ttk.Label(self.connect, justify="left", wraplength=600, style="Muted.TLabel",
+                  text="This uses the Brightspace login your web browser already has — "
+                       "no password is asked for or stored. Sign in to Brightspace in "
+                       "that browser first, then connect here.").pack(anchor="w", pady=(4, 14))
 
         form = ttk.Frame(self.connect)
-        form.pack(anchor="w")
+        form.pack(anchor="w", fill="x")
         self.v_url = tk.StringVar(value=self.model.base_url)
         self.v_browser = tk.StringVar(value=self.model.browser)
+        self.v_profile = tk.StringVar(value=self.model.chrome_profile or "Default")
 
         ttk.Label(form, text="Brightspace address").grid(row=0, column=0, sticky="w", pady=4)
         e_url = ttk.Entry(form, textvariable=self.v_url, width=42)
@@ -117,20 +119,47 @@ class App(tk.Tk):
         cb = ttk.Combobox(form, values=_BROWSERS, textvariable=self.v_browser,
                           state="readonly", width=16)
         cb.grid(row=1, column=1, sticky="w", padx=8)
-        Tooltip(cb, "The browser you normally use for Brightspace. Pick 'auto' to try "
-                    "the common ones. 'cookies_txt' is an advanced manual option.")
+        Tooltip(cb, "The browser you normally use for Brightspace. 'auto' tries the "
+                    "common ones. 'cookies_txt' is an advanced manual option.")
+
+        prof_help = ("Leave this as “Default” unless you use more than one profile in "
+                     "Chrome/Edge/Brave. To find its name: open a new tab at "
+                     "chrome://version (or edge://version / brave://version), look at "
+                     "“Profile Path”, and use the last folder — e.g. “Default” or "
+                     "“Profile 1”.")
+        lbl_prof = ttk.Label(form, text="Browser profile")
+        lbl_prof.grid(row=2, column=0, sticky="w", pady=4)
+        e_prof = ttk.Entry(form, textvariable=self.v_profile, width=24)
+        e_prof.grid(row=2, column=1, sticky="w", padx=8)
+        e_prof.bind("<Return>", lambda _e: self._connect())
+        Tooltip(lbl_prof, prof_help)
+        Tooltip(e_prof, prof_help)
 
         self.btn_connect = ttk.Button(self.connect, text="Connect", command=self._connect)
-        self.btn_connect.pack(anchor="w", pady=16)
+        self.btn_connect.pack(anchor="w", pady=14)
         Tooltip(self.btn_connect, "Check that we can read your Brightspace session. "
                                   "Nothing is downloaded yet.")
-        self.lbl_conn = ttk.Label(self.connect, text="", justify="left", wraplength=560)
+        self.lbl_conn = ttk.Label(self.connect, text="", justify="left", wraplength=600)
         self.lbl_conn.pack(anchor="w")
+
+        self.conn_error = ttk.Frame(self.connect, padding=(0, 8, 0, 0))
+        self.conn_error_box = tk.Text(self.conn_error, height=9, wrap="word",
+                                      state="disabled", font=("", 11),
+                                      highlightthickness=0)
+        self.conn_error_box.pack(fill="both", expand=True)
+        self.conn_error_box.tag_configure("hdr", foreground=self.pal["err"],
+                                          font=("", 11, "bold"))
+
+    def _hide_conn_error(self) -> None:
+        self.conn_error.forget()
 
     def _connect(self) -> None:
         self._pull()
+        self._hide_conn_error()
         if not self.v_url.get().strip().startswith("https://"):
-            messagebox.showwarning("Address", "The address must start with https://")
+            self.lbl_conn.configure(
+                text="The address must start with https:// — fix it and press Connect.",
+                foreground=self.pal["err"])
             return
         self.btn_connect.configure(state="disabled")
         self.lbl_conn.configure(text="Connecting…", foreground=self.pal["muted"])
@@ -138,6 +167,8 @@ class App(tk.Tk):
 
     def _on_connected(self, name: str, courses: list) -> None:
         self.btn_connect.configure(state="normal")
+        self.lbl_conn.configure(text="")
+        self._hide_conn_error()
         self._connected_name = name
         if self._file_cfg is not None and not self._courses_from_file:
             self.model = SetupModel.from_config(self._file_cfg, courses)
@@ -165,10 +196,30 @@ class App(tk.Tk):
         self.model.courses = merged
 
     def _on_connect_failed(self, msg: str) -> None:
+        log.error("connect failed: %s", msg)          # full detail -> log/console
         self.btn_connect.configure(state="normal")
-        self.lbl_conn.configure(text="Couldn't connect — see the details, fix, and try again.",
-                                foreground=self.pal["err"])
-        messagebox.showerror("Connection failed", msg)
+        self.lbl_conn.configure(
+            text="✗  Couldn't connect. Work through the steps below, then press Connect again.",
+            foreground=self.pal["err"])
+
+        # show the user only the plain-language part: drop parenthetical
+        # "(last error: <python exception>)" tails and any "TypeName: repr" lines.
+        clean = re.sub(r"\s*\(last error:.*?\)", "", msg, flags=re.DOTALL)
+        lines, kept = clean.splitlines(), []
+        for ln in lines:
+            s = ln.strip()
+            if re.match(r"^[A-Za-z_.]+(Error|Exception):", s):
+                continue
+            kept.append(ln)
+        clean = "\n".join(kept).strip()
+
+        box = self.conn_error_box
+        box.configure(state="normal")
+        box.delete("1.0", "end")
+        box.insert("end", "Couldn't read a Brightspace session\n", ("hdr",))
+        box.insert("end", "\n" + clean + "\n")
+        box.configure(state="disabled")
+        self.conn_error.pack(fill="both", expand=True, pady=(10, 0))
 
     # Screen 2: setup -------------------
     def _build_setup(self) -> None:
@@ -183,34 +234,48 @@ class App(tk.Tk):
         back = ttk.Button(head, text="Change connection", command=lambda: self._show("connect"))
         back.pack(side="right")
         Tooltip(back, "Go back to step 1 to use a different address or browser.")
-        ttk.Label(b, text="Step 2 — Choose what to download", style="Heading.TLabel").pack(
-            anchor="w", pady=(6, 8))
+        ttk.Label(b, text="Step 2 — Set up your download", style="Heading.TLabel").pack(
+            anchor="w", pady=(6, 2))
+        ttk.Label(b, style="Muted.TLabel", justify="left", wraplength=660,
+                  text="Work down the three boxes, then press Save & Run at the bottom. "
+                       "Your choices are saved, so next time you can just run again.").pack(
+            anchor="w", pady=(0, 8))
 
-        # data folder
-        fol = ttk.LabelFrame(b, text="Save downloaded files to", padding=8)
+        # 1 - data folder
+        fol = ttk.LabelFrame(b, text="1.  Where to save", padding=8)
         fol.pack(fill="x", pady=4)
+        ttk.Label(fol, style="Muted.TLabel", justify="left", wraplength=640,
+                  text="All course files go in this folder. The default is a “bs_data” "
+                       "folder next to this app. Running again only fetches what changed.").pack(
+            anchor="w", pady=(0, 4))
+        drow = ttk.Frame(fol)
+        drow.pack(fill="x")
         self.v_dir = tk.StringVar(value=self.model.data_dir)
-        e_dir = ttk.Entry(fol, textvariable=self.v_dir)
+        e_dir = ttk.Entry(drow, textvariable=self.v_dir)
         e_dir.pack(side="left", fill="x", expand=True)
-        br = ttk.Button(fol, text="Browse…", command=self._browse_dir)
+        br = ttk.Button(drow, text="Browse…", command=self._browse_dir)
         br.pack(side="left", padx=4)
         for w in (e_dir, br):
-            Tooltip(w, "The folder your course files are saved into. By default it's a "
-                       "“bs_data” folder next to this app. Re-running only downloads what changed.")
+            Tooltip(w, "Pick any folder you like, or leave the default.")
 
-        # sections
-        sec = ttk.LabelFrame(b, text="What to download", padding=8)
+        # 2 - sections
+        sec = ttk.LabelFrame(b, text="2.  What to download", padding=8)
         sec.pack(fill="x", pady=4)
+        ttk.Label(sec, style="Muted.TLabel",
+                  text="Tick the kinds of material you want a copy of.").pack(
+            anchor="w", pady=(0, 4))
+        secgrid = ttk.Frame(sec)
+        secgrid.pack(anchor="w")
         self.v_inc = {}
         for i, (key, label, hint) in enumerate(_SECTIONS):
             var = tk.BooleanVar(value=self.model.include.get(key, False))
             self.v_inc[key] = var
-            cbx = ttk.Checkbutton(sec, text=label, variable=var)
+            cbx = ttk.Checkbutton(secgrid, text=label, variable=var)
             cbx.grid(row=i // 2, column=i % 2, sticky="w", padx=4, pady=1)
             Tooltip(cbx, hint)
 
-        # courses
-        crs = ttk.LabelFrame(b, text="Courses", padding=8)
+        # 3 - courses
+        crs = ttk.LabelFrame(b, text="3.  Which courses", padding=8)
         crs.pack(fill="x", pady=4)
         self.v_all = tk.BooleanVar(value=self.model.sync_all)
         all_cb = ttk.Checkbutton(
@@ -225,10 +290,9 @@ class App(tk.Tk):
         self.course_editor.pack(fill="x")
 
         # advanced
-        adv = Collapsible(b, "Advanced settings")
+        adv = Collapsible(b, "Advanced")
         adv.pack(fill="x", pady=4)
         a = adv.body
-        self.v_profile = tk.StringVar(value=self.model.chrome_profile)
         self.v_delay = tk.StringVar(value=str(self.model.request_delay_seconds))
         self.v_retries = tk.StringVar(value=str(self.model.max_retries))
         self.v_prune = tk.BooleanVar(value=self.model.prune)
@@ -236,9 +300,6 @@ class App(tk.Tk):
         self.v_vrate = tk.StringVar(value=self.model.video_rate_limit)
         self.v_vtimeout = tk.StringVar(value=str(self.model.video_timeout))
         rows = [
-            ("Browser profile", self.v_profile, None,
-             "Only if you use more than one profile in Chrome/Edge/Brave, e.g. “Profile 1”. "
-             "Leave blank for the default profile."),
             ("Delay between requests (s)", self.v_delay, None,
              "Pause between calls to Brightspace. Raise it if you get rate-limited; "
              "0.4 is fine normally."),
@@ -269,16 +330,20 @@ class App(tk.Tk):
                           "you have is ever deleted.")
 
         # actions
+        ttk.Separator(b).pack(fill="x", pady=(10, 4))
         self.lbl_problems = ttk.Label(b, style="Err.TLabel", justify="left", wraplength=680)
-        self.lbl_problems.pack(anchor="w", pady=(8, 2))
+        self.lbl_problems.pack(anchor="w", pady=(0, 2))
+        ttk.Label(b, style="Muted.TLabel", justify="left", wraplength=660,
+                  text="“Save & Run” will store the settings and starts downloading.").pack(
+            anchor="w", pady=(0, 4))
         act = ttk.Frame(b)
         act.pack(fill="x", pady=6)
-        save_btn = ttk.Button(act, text="Save settings", command=self._save_only)
-        save_btn.pack(side="left")
-        Tooltip(save_btn, "Write these choices to config.yaml without downloading anything.")
         self.btn_run = ttk.Button(act, text="Save & Run  ▶", command=self._run)
-        self.btn_run.pack(side="left", padx=6)
+        self.btn_run.pack(side="left")
         Tooltip(self.btn_run, "Save the settings and start downloading.")
+        save_btn = ttk.Button(act, text="Save settings", command=self._save_only)
+        save_btn.pack(side="left", padx=6)
+        Tooltip(save_btn, "Write these choices to config.yaml without downloading anything.")
 
     def _browse_dir(self) -> None:
         start = self.v_dir.get() or str(Path.home())
@@ -300,11 +365,12 @@ class App(tk.Tk):
         m = self.model
         m.base_url = self.v_url.get().strip()
         m.browser = self.v_browser.get()
+        prof = self.v_profile.get().strip()
+        m.chrome_profile = "" if prof.lower() == "default" else prof
         if hasattr(self, "v_dir"):
             m.data_dir = self.v_dir.get().strip()
             m.include = {k: v.get() for k, v in self.v_inc.items()}
             m.sync_all = self.v_all.get()
-            m.chrome_profile = self.v_profile.get().strip()
             m.request_delay_seconds = _num(self.v_delay.get(), 0.4)
             m.max_retries = int(_num(self.v_retries.get(), 4))
             m.prune = self.v_prune.get()

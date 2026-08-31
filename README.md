@@ -190,9 +190,10 @@ and does a live check. Common causes:
   `browser: chrome` and `chrome_profile: "Profile 1"` in `config.yaml`, or pass
   `--profile "Profile 1"`.
 * **Cookie value came back empty** = the browser cookie store couldn't be
-  decrypted (Keychain prompt denied, or `browser_cookie3` older than your
-  browser). Re-run and allow the Keychain prompt, or
-  `./.venv/bin/pip install -U browser-cookie3`.
+  decrypted. Fully quit the browser and re-run, allow the macOS Keychain prompt,
+  or try another browser (sign in to Brightspace there, then set `browser:` to
+  it). Cookie reading uses `rookiepy`, which handles Chrome 127+'s app-bound
+  encryption on Windows.
 * **`doctor` says the web dashboard loads but the API still 403s** = this
   Brightspace instance blocks cookie-based API access. Use the manual method:
 

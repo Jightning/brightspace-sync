@@ -17,6 +17,7 @@ from ..client import Brightspace
 from ..config import Config
 from ..enrollments import list_all_courses
 from ..sync import run_sync
+from ..util import log
 
 
 class QueueLogHandler(logging.Handler):
@@ -58,7 +59,13 @@ class ConnectWorker(threading.Thread):
             self._q.put(("connect_failed", str(exc)))
             return
         except Exception as exc:  # noqa: BLE001
-            self._q.put(("connect_failed", f"{type(exc).__name__}: {exc}"))
+            log.exception("connect: unexpected error")
+            self._q.put(("connect_failed",
+                         "Couldn't reach Brightspace. Check that:\n"
+                         "  1. You have an internet connection.\n"
+                         f"  2. The address is correct: {self._cfg.base_url}\n"
+                         "  3. You are signed in to Brightspace in the browser you picked.\n"
+                         "Then press Connect again."))
             return
 
         name = f"{who.get('FirstName', '')} {who.get('LastName', '')}".strip() or "?"
@@ -67,8 +74,12 @@ class ConnectWorker(threading.Thread):
             try:
                 courses = list_all_courses(Brightspace(session, self._cfg))
             except Exception as exc:  # noqa: BLE001
-                self._q.put(("connect_failed", f"Signed in as {name}, but the "
-                                               f"course list failed: {exc}"))
+                log.exception("connect: signed in but course list failed")
+                self._q.put(("connect_failed",
+                             f"Signed in as {name}, but loading your course list "
+                             f"failed.\n  1. Wait a moment and press Connect again.\n"
+                             f"  2. If it keeps failing, open Brightspace in your "
+                             f"browser and check it loads normally."))
                 return
         self._q.put(("connected", name, courses))
 

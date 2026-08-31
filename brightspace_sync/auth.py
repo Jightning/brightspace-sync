@@ -1,21 +1,5 @@
-"""Build an authenticated requests.Session from an existing browser login.
-
-Design notes / safety:
-  * We never see or ask for a password. We only borrow the session cookies that
-    your browser already holds after you logged into Brightspace normally
-    (including the Microsoft SSO + MFA dance).
-  * `d2lSecureSessionVal` is HttpOnly + Secure, so it cannot be read from JS / a
-    bookmarklet - it has to come from the browser cookie store or a manual
-    DevTools export. That is why this reads the browser DB directly.
-  * If cookie extraction fails, fall back to a Netscape `cookies.txt` you
-    export yourself (see README).
-
-Why a registrable-domain filter (the `_registrable_domain` bit below):
-  browser_cookie3 asks the browser's cookie DB with `host_key LIKE '%<domain>%'`.
-  Brightspace scopes `d2lSessionVal` to `purdue.brightspace.com` but
-  `d2lSecureSessionVal` to `.brightspace.com`. Passing the full host drops the
-  secure cookie at the SQL level, and Brightspace then answers 403. So we query
-  with `brightspace.com` and narrow the result ourselves in `_filter_jar`.
+"""
+Build an authenticated requests.Session from an existing browser login.
 """
 
 from __future__ import annotations
@@ -57,22 +41,23 @@ def _registrable_domain(host: str) -> str:
     return ".".join(parts[-2:]) if len(parts) >= 2 else host
 
 def _browser_loaders(choice: str):
-    """Yields (name, callable) cookie loaders"""
-    import browser_cookie3 as bc3
+    """Yields (name, loader) where loader(domains: list[str]) -> list[cookie dict]."""
+    import rookiepy
 
     table = {
-        "chrome": bc3.chrome,
-        "edge": bc3.edge,
-        "brave": bc3.brave,
-        "firefox": bc3.firefox,
-        "safari": bc3.safari,
+        "chrome": rookiepy.chrome,
+        "edge": rookiepy.edge,
+        "brave": rookiepy.brave,
+        "firefox": rookiepy.firefox,
     }
+    if hasattr(rookiepy, "safari"):  # macOS only
+        table["safari"] = rookiepy.safari
 
     order = ["chrome", "edge", "brave", "firefox", "safari"] if choice == "auto" else [choice]
     for name in order:
-        callable = table.get(name)
-        if callable is not None:
-            yield name, callable
+        loader = table.get(name)
+        if loader is not None:
+            yield name, loader
 
 def _profile_cookie_file(cfg: Config) -> str | None:
     """Gets cookies-file path when chrome_profile is set"""
@@ -110,16 +95,18 @@ def list_chrome_profiles(cfg: Config) -> list[str]:
 
 def _load_jar_from_browser(cfg: Config, query_domain: str) -> tuple[http.cookiejar.CookieJar, str]:
     """Loads cookie jar from the browser, returns (jar, name)"""
+    import rookiepy
+
     cookie_file = _profile_cookie_file(cfg)
     last_err: Exception | None = None
 
     for name, loader in _browser_loaders(cfg.browser):
-        kwargs = {"domain_name": query_domain}
-        if cookie_file and name in _CHROME_FAMILY_ROOTS:
-            kwargs["cookie_file"] = cookie_file
-
         try:
-            jar = loader(**kwargs)
+            if cookie_file and name in _CHROME_FAMILY_ROOTS:
+                cookies = rookiepy.chromium_based(cookie_file, [query_domain])
+            else:
+                cookies = loader([query_domain])
+            jar = rookiepy.to_cookiejar(cookies)
         except Exception as exc:
             log.debug("cookie load from %s failed: %s", name, exc)
             last_err = exc
@@ -136,8 +123,9 @@ def _load_jar_from_browser(cfg: Config, query_domain: str) -> tuple[http.cookiej
     raise AuthError(
         f"No logged-in Brightspace session found in your browser{hint}.\n"
         f"  1. Open {cfg.base_url}/d2l/home in the browser and sign in, then refresh.\n"
-        f"  2. If you use a non-default Chrome profile, set `browser: chrome` and `chrome_profile: \"Profile 1\"` in config.yaml (see `doctor`).\n"
-        f"  3. Or export cookies.txt and set `browser: cookies_txt`."
+        f"  2. Try another browser: sign in to Brightspace there and set `browser:` to it\n"
+        f"  3. If you use a non-default Chrome profile, set `chrome_profile: \"Profile 1\"` (see `doctor`).\n"
+        f"  4. Or export cookies.txt and set `browser: cookies_txt`."
     )
 
 def _load_from_cookies_txt(cfg: Config) -> http.cookiejar.CookieJar:
@@ -208,11 +196,8 @@ def _assert_cookies_usable(session: requests.Session, cfg: Config) -> None:
 
     if not sv:
         raise AuthError(
-            f"The {_SESSION_COOKIE} cookie came back empty. That usually means the "
-            f"browser cookie store could not be decrypted (Keychain access was "
-            f"denied, or browser_cookie3 is older than your browser).\n"
-            f"Fix: re-run and click 'Allow' on the Keychain prompt, "
-            f"`pip install -U browser-cookie3`, or use `browser: cookies_txt`."
+            f"The {_SESSION_COOKIE} cookie came back empty (on macOS: Keychain access was denied, "
+            f"anywhere else: the browser may need to be fully closed first).\n"
         )
     
     if not kv:
