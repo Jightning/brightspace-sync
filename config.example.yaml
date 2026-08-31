@@ -17,8 +17,9 @@ include:
   news: true
   assignments: true
   calendar: false
-  # Embedded lecture videos when true
-  # When false you still get a working .url shortcut and a .html for each video.
+  # Download embedded lecture videos (Kaltura/BoilerCast, YouTube, ...). yt-dlp
+  # is bundled, so nothing extra to install. When false you still get a working
+  # .url shortcut and a browser-openable .html for each video.
   videos: false
 
 # Course selection ------------------
@@ -61,3 +62,9 @@ data_dir: bs_data
 request_delay_seconds: 0.4   # delay between API calls
 max_retries: 4 # retries on 429 / 5xx
 prune: false # delete local files that were removed in Brightspace when true
+
+# Video config (only matters when include.videos is true)
+# modify if video downloading takes too long
+video_quality: 1080   # capped resolution
+video_rate_limit: ""  # eg "3M" = 3 MB/s cap. Empty means use full bandwidth
+video_timeout: 0      # seconds to allow per video before giving up. 0 = no limit

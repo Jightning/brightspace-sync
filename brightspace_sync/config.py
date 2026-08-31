@@ -18,6 +18,7 @@ _VALID_BROWSERS = {"auto", "chrome", "edge", "brave", "firefox", "safari", "cook
 _KNOWN_TOP = {
     "base_url", "browser", "chrome_profile", "data_dir", "courses_dir",
     "cookies_txt_path", "request_delay_seconds", "max_retries", "prune",
+    "video_rate_limit", "video_quality", "video_timeout",
     "include", "courses",
 }
 _KNOWN_COURSES = {"mode", "allow", "ignore", "map"}
@@ -66,6 +67,9 @@ class Config:
     request_delay_seconds: float = 0.4 # rate limiting
     max_retries: int = 4 # number retries for http failures
     prune: bool = False # delete local files that no longer exist in Brightspace
+    video_rate_limit: str = "" # throttle video downloads, empty means full speed
+    video_quality: int | None = 1080 # capped video resolution, None/"best" means best available
+    video_timeout: int = 7200 # seconds per video before giving up, 0 means no limit
     include: dict[str, bool] = field(default_factory=dict) # enabled content sections
     courses_mode: str = "allowlist" # 'allowlist' | 'all'
     allow: list[CourseRule] = field(default_factory=list) # courses included
@@ -207,6 +211,11 @@ def load_config(path_str: str | None = None) -> Config:
     cfg.request_delay_seconds = float(raw.get("request_delay_seconds", cfg.request_delay_seconds))
     cfg.max_retries = int(raw.get("max_retries", cfg.max_retries))
     cfg.prune = bool(raw.get("prune", cfg.prune))
+
+    cfg.video_rate_limit = str(raw.get("video_rate_limit", "") or "")
+    vq = raw.get("video_quality", 1080)
+    cfg.video_quality = None if str(vq).strip().lower() in ("", "0", "best", "none") else int(vq)
+    cfg.video_timeout = int(raw.get("video_timeout", cfg.video_timeout) or 0)
 
     inc = raw.get("include") or {}
     cfg.include = {

@@ -23,11 +23,8 @@ dependencies = [
   "requests>=2.31",
   "browser-cookie3>=0.20.1",
   "PyYAML>=6.0",
+  "yt-dlp>=2024.1.1",   # lecture-video downloads (used only when include.videos: true)
 ]
-
-# `pip install "brightspace-sync[videos]"` adds lecture-video downloads.
-[project.optional-dependencies]
-videos = ["yt-dlp>=2024.1.1"]
 
 [project.scripts]
 brightspace-sync = "brightspace_sync.cli:main"

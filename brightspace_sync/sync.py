@@ -15,6 +15,7 @@ from .enrollments import Course, list_all_courses, select_courses
 from .grades import sync_grades
 from .manifest import Manifest
 from .mapping import resolve_placements
+from .media import VideoOpts
 from .news import sync_news
 from .util import log, now_iso
 
@@ -39,6 +40,7 @@ def run_sync(
     force: bool = False,
     dry_run: bool = False,
     prune: bool = False,
+    skip_videos: bool = False,
 ) -> SyncOutcome:
     out = SyncOutcome()
     do_prune = prune or cfg.prune
@@ -91,12 +93,18 @@ def run_sync(
                 "is_active": course.is_active, "synced_at": now_iso(),
             }, indent=2), "utf-8")
 
-        want_videos = cfg.includes_section("videos")
+        want_videos = cfg.includes_section("videos") and not skip_videos
+        vopts = VideoOpts(
+            enabled=want_videos,
+            rate_limit=cfg.video_rate_limit,
+            max_height=cfg.video_quality,
+            timeout=cfg.video_timeout,
+            archive=cdir / ".video-archive.txt",
+        )
 
         try:
             if "content" in sections and cfg.includes_section("content"):
-                st = sync_content(bs, course, cdir, manifest, force=force, dry_run=dry_run,
-                                videos=want_videos, video_archive=cdir / ".video-archive.txt")
+                st = sync_content(bs, course, cdir, manifest, force=force, dry_run=dry_run, video_opts=vopts)
 
                 log.info("  content: %d new, %d updated, %d unchanged, %d links, "
                         "%d embeds, %d videos, %d errors",

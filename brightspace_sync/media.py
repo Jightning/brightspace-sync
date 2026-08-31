@@ -152,8 +152,35 @@ def write_pointer(dest: Path, stream_page: str) -> None:
 
 
 # Download -----------------------
+@dataclass
+class VideoOpts:
+    """How to fetch videos. Built once per course in sync.py from the config."""
+    enabled: bool = False
+    rate_limit: str = ""          # "" = full speed; else "3M", "800K", ...
+    max_height: int | None = 1080  # cap resolution; None = best available
+    timeout: int = 7200            # seconds per video (binary path only); 0 = none
+    archive: Path | None = None    # yt-dlp download-archive file (resume / dedup)
+
+_RATE_RE = re.compile(r"^\s*([\d.]+)\s*([kmg]?)i?b?\s*$", re.I)
+
+def _parse_rate(s: str) -> int | None:
+    if not s:
+        return None
+    m = _RATE_RE.match(str(s))
+    if not m:
+        log.warning("video_rate_limit %r not understood - ignoring", s)
+        return None
+    try:
+        n = float(m.group(1))
+    except ValueError:
+        return None
+    return int(n * {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[m.group(2).lower()])
+
 def find_ytdlp() -> str | None:
-    # next to this executable (works for the frozen build: drop yt-dlp beside it)
+    """
+    An explicit yt-dlp *binary* to prefer over the bundled/importable module
+    (lets a user drop a newer yt-dlp next to the executable or on PATH).
+    """
     for base in {Path(sys.executable).parent, Path(sys.argv[0]).resolve().parent}:
         for name in ("yt-dlp", "yt-dlp.exe"):
             if (base / name).is_file():
@@ -167,40 +194,96 @@ def download_video(
     dest_dir: Path,
     base_name: str,
     base_url: str,
-    archive: Path,
-    rate_limit: str | None = "3M",
-    timeout: int = 3600,
+    opts: VideoOpts,
+    progress=None,
 ) -> tuple[str, Path | None]:
-    """Returns (status, path). status: 'ok' | 'exists' | 'no-ytdlp' | 'error'."""
-    ytdlp = find_ytdlp()
-    if not ytdlp:
-        return "no-ytdlp", None
+    """
+    Returns (status, path). status: 'ok' | 'exists' | 'no-ytdlp' | 'error: ...'.
 
+    Uses an explicit yt-dlp binary if one is found, otherwise the bundled
+    `yt_dlp` Python module (a hard dependency, so this normally always works).
+    """
     dest_dir.mkdir(parents=True, exist_ok=True)
+    had_file = _existing_video(dest_dir, base_name) is not None
+    target = info.ytdlp_target()
     out_tmpl = str(dest_dir / (base_name + ".%(ext)s"))
+    archive = str(opts.archive or (dest_dir / ".video-archive.txt"))
+
+    binary = find_ytdlp()
+    if binary:
+        rc, err = _via_binary(binary, target, out_tmpl, base_url, archive, opts)
+    else:
+        rc, err = _via_api(target, out_tmpl, base_url, archive, opts, progress)
+        if rc is None:
+            return "no-ytdlp", None
+
+    got = _existing_video(dest_dir, base_name)
+    if rc == 0:
+        return ("exists" if had_file else "ok"), got
+    return f"error: {err}", got
+
+
+def _fmt(max_height: int | None) -> str | None:
+    if not max_height:
+        return None
+    return (f"bv*[height<={max_height}]+ba/b[height<={max_height}]"
+            f"/bv*+ba/b")
+
+
+def _via_api(target, out_tmpl, base_url, archive, opts: VideoOpts, progress):
+    try:
+        import yt_dlp
+    except Exception:  # noqa: BLE001 - not installed / bundle stripped
+        return None, None
+    
+    y = {
+        "outtmpl": out_tmpl,
+        "noplaylist": True,
+        "quiet": True, "no_warnings": True, "noprogress": True,
+        "http_headers": {"Referer": base_url.rstrip("/") + "/"},
+        "download_archive": archive,
+        "retries": 3, "fragment_retries": 3, "socket_timeout": 30,
+    }
+
+    rl = _parse_rate(opts.rate_limit)
+    if rl:
+        y["ratelimit"] = rl
+
+    fmt = _fmt(opts.max_height)
+    if fmt:
+        y["format"] = fmt
+    if progress:
+        y["progress_hooks"] = [progress]
+
+    try:
+        with yt_dlp.YoutubeDL(y) as ydl: # type: ignore
+            return ydl.download([target]), None
+    except Exception as exc:  # noqa: BLE001 - DownloadError etc.
+        last = (str(exc).strip().splitlines() or ["download failed"])[-1]
+        return 1, last
+
+
+def _via_binary(ytdlp, target, out_tmpl, base_url, archive, opts: VideoOpts):
     cmd = [
         ytdlp, "--no-playlist", "--no-progress", "--no-warnings",
         "--referer", base_url.rstrip("/") + "/",
-        "--retries", "3", "--fragment-retries", "3",
-        "--download-archive", str(archive),
-        "-o", out_tmpl,
+        "--retries", "3", "--fragment-retries", "3", "--socket-timeout", "30",
+        "--download-archive", archive, "-o", out_tmpl,
     ]
-    if rate_limit:
-        cmd += ["--limit-rate", rate_limit]
-    cmd.append(info.ytdlp_target())
-
+    if opts.rate_limit:
+        cmd += ["--limit-rate", opts.rate_limit]
+    if opts.max_height:
+        cmd += ["-S", f"res:{opts.max_height}"]
+    cmd.append(target)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=opts.timeout or None)
     except (subprocess.TimeoutExpired, OSError) as exc:
-        return f"error: {exc}", None
-
-    existing = _existing_video(dest_dir, base_name)
+        return 1, str(exc)
     if r.returncode == 0:
-        if "has already been recorded in the archive" in (r.stdout or ""):
-            return "exists", existing
-        return "ok", existing
+        return 0, None
     msg = [ln for ln in (r.stderr or r.stdout or "").strip().splitlines() if ln.strip()]
-    return f"error: {msg[-1] if msg else 'yt-dlp exit %d' % r.returncode}", existing
+    return r.returncode, (msg[-1] if msg else f"yt-dlp exit {r.returncode}")
 
 _VIDEO_EXT = (".mp4", ".mkv", ".webm", ".mov", ".m4v", ".mp3", ".m4a")
 

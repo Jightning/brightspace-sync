@@ -37,6 +37,7 @@ jobs:
         run: |
           pyinstaller --onefile --name brightspace-sync \
             --collect-all browser_cookie3 \
+            --collect-all yt_dlp \
             run.py
       - name: Rename
         shell: bash

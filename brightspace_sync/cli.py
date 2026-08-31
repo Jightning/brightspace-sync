@@ -204,7 +204,7 @@ base_url: {base_url}
 browser: {browser}
 chrome_profile:
 
-data_dir: bs_data          # everything written goes here
+data_dir: bs_data.   # everything written goes here
 
 include:
   content: true
@@ -212,7 +212,11 @@ include:
   news: true
   assignments: true
   calendar: false
-  videos: {str(videos).lower()}
+  videos: {str(videos).lower()}     # download embedded lecture videos (yt-dlp is bundled)
+
+# Video configs (only when include.videos is true) - see config.example.yaml
+# video_quality: 1080       # cap resolution; 720 roughly halves size/time; best = no cap
+# video_rate_limit: ""      # e.g. "3M" to throttle; empty = full speed
 
 courses:
   mode: {mode}             # allowlist (only what's listed) | all (everything)
@@ -242,6 +246,7 @@ def cmd_sync(args) -> int:
         force=args.force,
         dry_run=args.dry_run,
         prune=args.prune,
+        skip_videos=args.skip_videos,
     )
 
     if outcome.auth_failed:
@@ -300,6 +305,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="re-download everything, even if it's already present")
     sp.add_argument("--prune", action="store_true",
                     help="delete local files that no longer exist in Brightspace")
+    sp.add_argument("--skip-videos", action="store_true",
+                    help="don't download videos this run (overrides include.videos)")
     sp.add_argument("--dry-run", action="store_true",
                     help="show what would happen without writing")
     sp.add_argument("--notify-on-auth-failure", action="store_true",

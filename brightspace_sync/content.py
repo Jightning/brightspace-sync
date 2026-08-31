@@ -71,8 +71,7 @@ def sync_content(
     *,
     force: bool,
     dry_run: bool,
-    videos: bool = False,
-    video_archive: Path | None = None,
+    video_opts: "media.VideoOpts | None" = None,
 ) -> Stats:
     """
     Fetches root modules from the Brightspace API.
@@ -90,8 +89,7 @@ def sync_content(
     index: list[dict] = []
     for module in roots:
         node = _walk_module(bs, ou, module, content_root, ["Content"], manifest,
-                            stats, force=force, dry_run=dry_run,
-                            videos=videos, video_archive=video_archive)
+                            stats, force=force, dry_run=dry_run, video_opts=video_opts)
         if node:
             index.append(node)
 
@@ -109,8 +107,7 @@ def _walk_module(
     *,
     force: bool,
     dry_run: bool,
-    videos: bool = False,
-    video_archive: Path | None = None,
+    video_opts: "media.VideoOpts | None" = None,
 ) -> dict | None:
     """For each child of a module, determines if it's a topic or a module, and processes into a node accordingly."""
     mod_id = module.get("Id")
@@ -140,14 +137,13 @@ def _walk_module(
     for child in children:
         if _is_module(child):
             sub = _walk_module(bs, ou, child, dir_here, here, manifest, stats,
-                               force=force, dry_run=dry_run,
-                               videos=videos, video_archive=video_archive)
+                               force=force, dry_run=dry_run, video_opts=video_opts)
             if sub:
                 node["children"].append(sub)
         else:
             topic_node = _handle_topic(bs, ou, child, dir_here, here, manifest,
                                        stats, force=force, dry_run=dry_run,
-                                       videos=videos, video_archive=video_archive)
+                                       video_opts=video_opts)
             if topic_node:
                 node["children"].append(topic_node)
     return node
@@ -163,8 +159,7 @@ def _handle_topic(
     *,
     force: bool,
     dry_run: bool,
-    videos: bool = False,
-    video_archive: Path | None = None,
+    video_opts: "media.VideoOpts | None" = None,
 ) -> dict | None:
     topic_id = child.get("Id")
     if topic_id is None:
@@ -232,13 +227,33 @@ def _handle_topic(
 
     if res.action != "error" and Path(res.path).suffix.lower() in (".html", ".htm"):
         _handle_embed(res.path, topic_id, ou, bs.base, node, manifest, stats,
-                      title=title, last_mod=last_mod, videos=videos,
-                      video_archive=video_archive, dry_run=dry_run)
+                      title=title, last_mod=last_mod, video_opts=video_opts,
+                      dry_run=dry_run)
     return node
+class _VideoProgress:
+    """Throttled progress logger for the yt-dlp API path."""
+    def __init__(self, title: str):
+        self.title = title
+        self._last = 0.0
+
+    def __call__(self, d: dict) -> None:
+        if d.get("status") != "downloading":
+            return
+        import time
+        now = time.time()
+        if now - self._last < 5:
+            return
+        self._last = now
+        total = d.get("total_bytes") or d.get("total_bytes_estimate")
+        got = d.get("downloaded_bytes", 0)
+        if total:
+            from .util import human_size
+            log.info("    %s  %d%% of %s", self.title, int(100 * got / total),
+                     human_size(total))
 
 
 def _handle_embed(html_path, topic_id, ou, base_url, node, manifest, stats, *,
-                  title, last_mod, videos, video_archive, dry_run) -> None:
+                  title, last_mod, video_opts, dry_run) -> None:
     """If a downloaded .html topic is just an embedded player, make it usable:
     write a .url pointer, rewrite the page for online viewing, and (if enabled)
     download the actual media file."""
@@ -271,12 +286,13 @@ def _handle_embed(html_path, topic_id, ou, base_url, node, manifest, stats, *,
     manifest.record(f"topic:{topic_id}", last_modified=last_mod, local=p,
                     extra={"kind": "embed", "provider": info.provider, "title": title})
 
-    if not videos:
+    if not (video_opts and video_opts.enabled):
         return
     vkey = f"video:{topic_id}"
+    log.info("  video: %s ...", title)
     status, path = media.download_video(
         info, dest_dir=p.parent, base_name=p.stem, base_url=base_url,
-        archive=video_archive or (p.parent / ".video-archive.txt"),
+        opts=video_opts, progress=_VideoProgress(title),
     )
     if path:
         node["media"]["video_file"] = path.name
@@ -284,9 +300,9 @@ def _handle_embed(html_path, topic_id, ou, base_url, node, manifest, stats, *,
                         extra={"kind": "video", "provider": info.provider})
         if status == "ok":
             stats.videos += 1
-            log.info("  video      %s", path.name)
     elif status == "no-ytdlp":
-        log.warning("  include.videos is on but yt-dlp was not found")
+        log.warning("  include.videos is on but yt-dlp is unavailable - reinstall "
+                    "brightspace-sync (it should be bundled)")
     else:
         manifest.touch(vkey)  # keep any earlier copy safe from --prune
         stats.video_errors += 1
