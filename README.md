@@ -1,20 +1,19 @@
 # Brightspace Sync
 
-Purdue doesn't allow access to the Brightspace API so this exists
-as an alternative to easily sync all the information locally.
+Do you want easy, local, and permanent access all your Brightspace data (including grades, lectures, announcements, etc.)?
 
-Pulls your course material from Brightspace, so that you can easily access it locally
-on your laptop.
+Unfortunately many organizations like Purdue don't allow easy/public access to the Brightspace API, so this exists as an easy and safe alternative (read-only and no passwords or credentials collected/stored).
 
-Once run, this will place all the data within a local folder defined in `config`.
-A manifest is kept, so that if you run again, it'll just pull what's been changed since the last run.
+This takes your cookies from a current Brightspace session, creates an authenticated session, and requests your chosen course data from Brightspace, so you can do whatever you'd like with it, locally on your machine.
+
+A manifest is also kept, so that if you run again, it'll just pull what's been changed since the last run.
 
 ---
 [rel]: https://github.com/Jightning/brightspace-sync/releases/latest
 
 ## Install
 
-### Option A: download (no command line)
+### Option A: download (using GUI)
 
 Get the file for your OS from the [latest release][rel]:
 
