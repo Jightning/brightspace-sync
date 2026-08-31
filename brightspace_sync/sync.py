@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Callable, Optional
 
 from .assignments import sync_assignments
 from .auth import AuthError, build_session
@@ -24,13 +25,23 @@ class SyncOutcome:
     def __init__(self) -> None:
         self.courses: list[str] = []
         self.auth_failed = False
+        self.stopped = False
         self.errors: list[str] = []
         self.file_errors = 0
         self.pruned = 0
 
     @property
     def ok(self) -> bool:
-        return not self.auth_failed and not self.errors
+        return not self.auth_failed and not self.stopped and not self.errors
+
+
+# (fraction 0..1, human-readable status) - the GUI turns this into a progress bar.
+ProgressCb = Callable[[float, str], None]
+
+
+def _report(cb: Optional[ProgressCb], fraction: float, message: str) -> None:
+    if cb:
+        cb(max(0.0, min(1.0, fraction)), message)
 
 def run_sync(
     cfg: Config,
@@ -41,11 +52,15 @@ def run_sync(
     dry_run: bool = False,
     prune: bool = False,
     skip_videos: bool = False,
+    on_progress: Optional[ProgressCb] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> SyncOutcome:
     out = SyncOutcome()
     do_prune = prune or cfg.prune
+    stop = should_stop or (lambda: False)
 
     # Authenticate
+    _report(on_progress, 0.0, "Connecting to Brightspace...")
     try:
         session, whoami = build_session(cfg)
     except AuthError as exc:
@@ -57,11 +72,13 @@ def run_sync(
     bs = Brightspace(session, cfg)
 
     # Pick Courses
+    _report(on_progress, 0.02, "Reading your course list...")
     all_courses = list_all_courses(bs)
     log.info("Enrolled in %d course offerings", len(all_courses))
     courses = select_courses(cfg, all_courses, cli_course_ids)
     if not courses:
         log.warning("No courses matched the current filter. Nothing to do.")
+        _report(on_progress, 1.0, "No courses matched your selection.")
         return out
 
     placements = resolve_placements(cfg, courses)
@@ -77,7 +94,15 @@ def run_sync(
         _write_root_index(cfg.courses_dir, whoami, courses, all_courses, placements)
 
     # Sync Each Course
-    for course in courses:
+    total = len(courses)
+    for i, course in enumerate(courses):
+        if stop():
+            out.stopped = True
+            log.warning("Stopped by user - progress so far is saved; re-run to continue.")
+            break
+        _report(on_progress, 0.05 + 0.95 * i / total,
+                f"Course {i + 1} of {total}: {course.code or course.name}")
+
         pl = placements[course.id]
         cdir = cfg.courses_dir.joinpath(*pl.parts())
         tag = pl.folder + (f"/{pl.subfolder}" if pl.subfolder else "")
@@ -152,6 +177,9 @@ def run_sync(
     if out.pruned:
         log.info("%s %d local file(s) that are gone from Brightspace",
                  "would prune" if dry_run else "pruned", out.pruned)
+    if not out.stopped:
+        _report(on_progress, 1.0,
+                f"Done - {len(out.courses)} course(s), {out.file_errors} file error(s).")
     return out
 
 

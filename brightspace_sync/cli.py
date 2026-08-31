@@ -128,6 +128,10 @@ def cmd_doctor(args) -> int:
     cfg = _prepare(args)
     return diagnose(cfg)
 
+# `gui`, the point-and-click window (setup + run) for non-technical users
+def cmd_gui(args) -> int:
+    from .gui import run_gui
+    return run_gui(getattr(args, "config", None))
 
 # `setup`, wizard that writes config.yaml
 def _ask(prompt: str, default: str = "") -> str:
@@ -302,6 +306,10 @@ def build_parser() -> argparse.ArgumentParser:
     # `setup`
     stp = sub.add_parser("setup", help="interactive first-run: writes config.yaml")
     stp.set_defaults(func=cmd_setup)
+
+    # `gui`
+    gp = sub.add_parser("gui", help="open the point-and-click window (setup + run)")
+    gp.set_defaults(func=cmd_gui)
 
     # `sync`
     sp = sub.add_parser("sync", parents=[common], help="download configured courses")

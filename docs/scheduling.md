@@ -14,6 +14,10 @@ Assumes `brightspace-sync` is on your `PATH` (installed via `pipx`/`uv`, or the
 downloaded binary placed somewhere on `PATH`) and a `config.yaml` exists in the
 directory you run from — adjust the `cd` / `--config` path as needed.
 
+The downloaded binary opens the GUI when double-clicked, but still runs as the
+CLI when you give it a command — so `brightspace-sync sync …` in a scheduled job
+works exactly as shown below.
+
 ## macOS — launchd
 
 Save as `~/Library/LaunchAgents/com.user.brightspace-sync.plist`, edit the paths,

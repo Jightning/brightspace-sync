@@ -1,12 +1,12 @@
 # Brightspace Sync
 
-Pulls your course material from Brightspace, so that you can easily access it locally
-on your laptop.
-
 Purdue doesn't allow access to the Brightspace API so this exists
 as an alternative to easily sync all the information locally.
 
-Upon running, this will place all the data within a local folder defined in `config`.
+Pulls your course material from Brightspace, so that you can easily access it locally
+on your laptop.
+
+Once run, this will place all the data within a local folder defined in `config`.
 A manifest is kept, so that if you run again, it'll just pull what's been changed since the last run.
 
 ---
@@ -14,7 +14,7 @@ A manifest is kept, so that if you run again, it'll just pull what's been change
 
 ## Install
 
-### Option A: download
+### Option A: download (no command line)
 
 Get the file for your OS from the [latest release][rel]:
 
@@ -24,6 +24,11 @@ Get the file for your OS from the [latest release][rel]:
 | macOS (Intel) | `brightspace-sync-macos-x64` |
 | Windows | `brightspace-sync-windows-x64.exe` |
 | Linux | `brightspace-sync-linux-x64` |
+
+Put it in a folder of its own and **double-click** to run.
+Follow the steps shown in the wizard and run.
+
+Running the downloaded file from a terminal via a command (as shown in all the uses below) uses the CLI.
 
 ### Option B: with Python (3.9+)
 
@@ -46,6 +51,9 @@ uv run pytest
 Prefix every `brightspace-sync` command below with `uv run` in development
 
 ## Setup
+
+Prefer clicking? `brightspace-sync gui` (or just double-click the downloaded
+file) opens a window for setup + run. Everything below is the command-line path.
 
 Run the wizard (writes to `config.yaml`):
 

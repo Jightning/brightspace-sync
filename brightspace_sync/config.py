@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -7,10 +8,30 @@ import yaml
 
 from .util import log
 
-CONFIG_SEARCH_PATHS = (
-    Path.cwd() / "config.yaml",
-    Path.cwd() / "bs_data" / "config.yaml",
-)
+
+def app_dir() -> Path:
+    """Folder the program lives in: next to the frozen executable, else the cwd.
+
+    The downloaded (PyInstaller) build keeps its config and data here so a
+    non-technical user can just drop the file in a folder and double-click it.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path.cwd()
+
+
+def config_search_paths() -> tuple[Path, ...]:
+    return (
+        Path.cwd() / "config.yaml",
+        Path.cwd() / "bs_data" / "config.yaml",
+        app_dir() / "config.yaml",
+        app_dir() / "bs_data" / "config.yaml",
+    )
+
+
+def default_config_path() -> Path:
+    """Where the GUI writes config.yaml when there isn't one yet."""
+    return app_dir() / "config.yaml"
 
 _VALID_BROWSERS = {"auto", "chrome", "edge", "brave", "firefox", "safari", "cookies_txt"}
 
@@ -60,10 +81,10 @@ class Config:
     base_url: str = "https://purdue.brightspace.com" # Brightspace URL to connect to
     browser: str = "auto" # cookie source (auto tries chrome, edge, brave, firefox, safari)
     chrome_profile: str | None = None # Chrome/Edge/Brave profile folder, e.g. "Default" or "Profile 1"
-    data_dir: Path = Path.cwd() / "bs_data" # ONE local folder that holds everything the tool writes
-    cookies_txt_path: Path = Path.cwd() / "bs_data" / "cookies.txt" # manual cookies file (browser: cookies_txt)
-    courses_dir: Path = Path.cwd() / "bs_data" / "courses" # where course content is saved
-    log_dir: Path = Path.cwd() / "bs_data" / "logs" # where the run log is written
+    data_dir: Path = field(default_factory=lambda: app_dir() / "bs_data") # ONE local folder that holds everything the tool writes
+    cookies_txt_path: Path = field(default_factory=lambda: app_dir() / "bs_data" / "cookies.txt") # manual cookies file (browser: cookies_txt)
+    courses_dir: Path = field(default_factory=lambda: app_dir() / "bs_data" / "courses") # where course content is saved
+    log_dir: Path = field(default_factory=lambda: app_dir() / "bs_data" / "logs") # where the run log is written
     request_delay_seconds: float = 0.4 # rate limiting
     max_retries: int = 4 # number retries for http failures
     prune: bool = False # delete local files that no longer exist in Brightspace
@@ -146,10 +167,10 @@ def find_config(path_str: str | None) -> Path:
         
         return p
     
-    for candidate in CONFIG_SEARCH_PATHS:
+    for candidate in config_search_paths():
         if candidate.is_file():
             return candidate.resolve()
-        
+
     raise SystemExit("No config.yaml found. Copy config.example.yaml to ./config.yaml and edit.")
 
 
@@ -244,3 +265,64 @@ def load_config(path_str: str | None = None) -> Config:
                     "Run `brightspace_sync list`.")
 
     return cfg
+
+# Writing config back out (used by the GUI) --------------------------------
+
+_SAVED_HEADER = (
+    "# Written by the Brightspace Sync app - safe to edit by hand.\n"
+    "# Every option is documented in config.example.yaml\n\n"
+)
+
+def _dir_str(path: Path) -> str:
+    """Keep the folder relative to the app when it sits under it, else absolute."""
+    try:
+        rel = path.resolve().relative_to(app_dir())
+    except ValueError:
+        return str(path)
+    return str(rel) if str(rel) not in (".", "") else "bs_data"
+
+
+def _rule_to_yaml(r: CourseRule) -> dict:
+    return {"id": int(r.id)} if r.id is not None else {"match": r.match}
+
+
+def _map_entry_to_yaml(e: MapEntry) -> dict:
+    out: dict[str, Any] = {"name": e.name}
+    matches = [r.match for r in e.selectors if r.match]
+    ids = [int(r.id) for r in e.selectors if r.id is not None]
+    if matches:
+        out["match"] = matches if len(matches) > 1 else matches[0]
+    if ids:
+        out["id"] = ids if len(ids) > 1 else ids[0]
+    if e.subfolders:
+        out["subfolders"] = {rule.match: label for rule, label in e.subfolders}
+    return out
+
+
+def config_to_yaml_dict(cfg: Config) -> dict:
+    data: dict[str, Any] = {"base_url": cfg.base_url, "browser": cfg.browser}
+    if cfg.chrome_profile:
+        data["chrome_profile"] = cfg.chrome_profile
+    data["data_dir"] = _dir_str(cfg.data_dir)
+    data["include"] = {k: bool(v) for k, v in cfg.include.items()}
+    data["courses"] = {
+        "mode": cfg.courses_mode,
+        "allow": [_rule_to_yaml(r) for r in cfg.allow],
+        "ignore": [_rule_to_yaml(r) for r in cfg.ignore],
+        "map": [_map_entry_to_yaml(e) for e in cfg.mapping],
+    }
+    data["request_delay_seconds"] = cfg.request_delay_seconds
+    data["max_retries"] = cfg.max_retries
+    data["prune"] = cfg.prune
+    data["video_quality"] = cfg.video_quality if cfg.video_quality else "best"
+    data["video_rate_limit"] = cfg.video_rate_limit
+    data["video_timeout"] = cfg.video_timeout
+    return data
+
+
+def save_config(cfg: Config, path: str | Path) -> Path:
+    path = Path(path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = yaml.safe_dump(config_to_yaml_dict(cfg), sort_keys=False, allow_unicode=True)
+    path.write_text(_SAVED_HEADER + body, "utf-8")
+    return path
