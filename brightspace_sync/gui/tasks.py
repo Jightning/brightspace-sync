@@ -1,4 +1,5 @@
-"""Background workers + a log bridge, so the window never freezes.
+"""
+Background workers + log bridge, so the window never freezes
 
 Everything a worker wants to tell the UI goes through a plain queue of
 ``(kind, *payload)`` tuples that the App drains on the tk main loop.

@@ -20,12 +20,13 @@ Get the file for your OS from the [latest release][rel]:
 | OS | file |
 | ---- | ------ |
 | macOS (Apple Silicon) | `brightspace-sync-macos-arm64` |
-| macOS (Intel) | `brightspace-sync-macos-x64` |
 | Windows | `brightspace-sync-windows-x64.exe` |
 | Linux | `brightspace-sync-linux-x64` |
 
 Put it in a folder of its own and **double-click** to run.
 Follow the steps shown in the wizard and run.
+
+On an Intel Mac, use Option B below.
 
 Running the downloaded file from a terminal via a command (as shown in all the uses below) uses the CLI.
 

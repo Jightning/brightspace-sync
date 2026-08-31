@@ -1,10 +1,9 @@
-"""Small reusable tk pieces."""
+"""Reusable tk pieces."""
 
 from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk
-
 
 class ScrollFrame(ttk.Frame):
     """A vertically scrolling area. Put content in ``.body``.
@@ -41,7 +40,6 @@ class ScrollFrame(ttk.Frame):
         elif getattr(event, "num", 0) == 5 or delta < 0:
             self._canvas.yview_scroll(1, "units")
 
-
 class Collapsible(ttk.Frame):
     """A header the user clicks to reveal ``.body``."""
 
@@ -64,7 +62,6 @@ class Collapsible(ttk.Frame):
             self.body.pack(fill="x")
         else:
             self.body.forget()
-
 
 class Tooltip:
     """A hover hint. ``Tooltip(widget, "text")`` — that's the whole API."""

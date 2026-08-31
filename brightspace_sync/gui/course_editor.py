@@ -1,4 +1,4 @@
-"""Pick courses, and (optionally) rename or merge their folders."""
+"""Pick courses, and rename or merge folders."""
 
 from __future__ import annotations
 

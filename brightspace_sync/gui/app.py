@@ -1,4 +1,4 @@
-"""The window: connect, then set up, then run with a progress bar."""
+"""The GUI windows"""
 
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ class App(tk.Tk):
         except BaseException:
             return default_config_path()
 
-    # ================= screen 1: connect =================
+    # Screen 1: connect ------------------------------
     def _build_connect(self) -> None:
         self.connect = ttk.Frame(self._container, padding=20)
         ttk.Label(self.connect, text="Step 1 — Connect to Brightspace",
@@ -170,7 +170,7 @@ class App(tk.Tk):
                                 foreground=self.pal["err"])
         messagebox.showerror("Connection failed", msg)
 
-    # ================= screen 2: setup =================
+    # Screen 2: setup -------------------
     def _build_setup(self) -> None:
         self.setup = ScrollFrame(self._container)
         b = self.setup.body
@@ -254,7 +254,7 @@ class App(tk.Tk):
         ]
         for i, (label, var, values, hint) in enumerate(rows):
             lb = ttk.Label(a, text=label)
-            lb.grid(row=i, column=0, sticky="w", **pad)
+            lb.grid(row=i, column=0, sticky="w", **pad) # type: ignore
             if values:
                 w = ttk.Combobox(a, values=values, textvariable=var, state="readonly", width=14)
             else:
@@ -264,7 +264,7 @@ class App(tk.Tk):
             Tooltip(w, hint)
         prune_cb = ttk.Checkbutton(
             a, text="Delete local files that were removed from Brightspace", variable=self.v_prune)
-        prune_cb.grid(row=len(rows), column=0, columnspan=2, sticky="w", **pad)
+        prune_cb.grid(row=len(rows), column=0, columnspan=2, sticky="w", **pad) # type: ignore
         Tooltip(prune_cb, "Keeps your folder an exact mirror. Off by default so nothing "
                           "you have is ever deleted.")
 
@@ -318,7 +318,7 @@ class App(tk.Tk):
         self.lbl_problems.configure(text="\n".join("•  " + p for p in probs))
         self.btn_run.configure(state="disabled" if probs else "normal")
 
-    # ================= screen 3: run =================
+    # Screen 3: run --------------------------
     def _build_run(self) -> None:
         self.run = ttk.Frame(self._container, padding=4)
         ttk.Label(self.run, text="Step 3 — Downloading", style="Heading.TLabel").pack(anchor="w")
@@ -358,7 +358,7 @@ class App(tk.Tk):
                    command=lambda: self._show("setup")).pack(side="left", padx=6)
         ttk.Button(self.run_done, text="Close", command=self._on_close).pack(side="left")
 
-    # ================= shared =================
+    # Shared -----------------------
     def _show(self, which: str) -> None:
         for name in ("connect", "setup", "run"):
             getattr(self, name).forget()
@@ -418,18 +418,18 @@ class App(tk.Tk):
         if error:
             self.lbl_status.configure(text="Something went wrong.")
             self._append_log("\nERROR: " + error, logging.ERROR)
-        elif outcome.auth_failed:
+        elif outcome.auth_failed: # type: ignore
             self.lbl_status.configure(
                 text="Sign-in expired — open Brightspace, sign in, and run again.")
-        elif outcome.stopped:
+        elif outcome.stopped: # type: ignore
             self.lbl_status.configure(text="Stopped. What was downloaded so far is saved.")
-        elif outcome.errors or outcome.file_errors:
+        elif outcome.errors or outcome.file_errors: # type: ignore
             self.lbl_status.configure(
-                text=f"Finished with {len(outcome.errors) or outcome.file_errors} "
-                     f"problem(s) — {len(outcome.courses)} course(s) done.")
+                text=f"Finished with {len(outcome.errors) or outcome.file_errors} " # type: ignore
+                     f"problem(s) — {len(outcome.courses)} course(s) done.") # type: ignore
         else:
             self.pbar.configure(value=100)
-            self.lbl_status.configure(text=f"Done — {len(outcome.courses)} course(s), "
+            self.lbl_status.configure(text=f"Done — {len(outcome.courses)} course(s), " # type: ignore
                                            f"no problems.")
 
         self._render_problems(outcome, error)

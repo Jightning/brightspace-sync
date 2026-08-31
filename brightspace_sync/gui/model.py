@@ -1,7 +1,5 @@
-"""Plain-data model behind the setup screen.
-
-Keeps all the config<->form translation (including the rename / merge rules) out
-of the tkinter code so it can be unit-tested without a display.
+"""
+Plain-data model behind the setup screen
 """
 
 from __future__ import annotations
@@ -33,12 +31,10 @@ class CourseChoice:
         return cls(id=c.id, code=c.code or "", name=c.name or "",
                    default_folder=c.folder)
 
-
 @dataclass
 class MergeGroup:
     key: str
     folder: str = ""
-
 
 @dataclass
 class SetupModel:
@@ -57,14 +53,14 @@ class SetupModel:
     request_delay_seconds: float = 0.4
     max_retries: int = 4
     prune: bool = False
-    video_quality: str = "1080"                 # "best" or an int as a string
+    video_quality: str = "1080"  # "best" or an int as a string
     video_rate_limit: str = ""
     video_timeout: int = 0
 
     # non-id ignore rules from a hand-edited file (e.g. match: "Sandbox") - kept as-is
     extra_ignore: List[CourseRule] = field(default_factory=list)
 
-    # --- reading ----------------------------------------------------------
+    # Reading -----------------------------------------------
     @classmethod
     def from_config(cls, cfg: Config, all_courses: List[Course]) -> "SetupModel":
         m = cls()
@@ -105,7 +101,7 @@ class SetupModel:
                 by_id[members[0].id].folder = entry.name
         return m
 
-    # --- writing --------------------------------------------------------
+    # Writing --------------------------------------------
     def to_config(self) -> Config:
         cfg = Config()
         cfg.base_url = self.base_url.rstrip("/")
@@ -165,7 +161,7 @@ class SetupModel:
         cfg.allow, cfg.ignore, cfg.mapping = allow, ignore, mapping
         return cfg
 
-    # --- checks -------------------------------------------------------
+    # Checks ---------------------------------------
     def problems(self) -> List[str]:
         out: List[str] = []
         if not self.base_url.startswith("https://"):
