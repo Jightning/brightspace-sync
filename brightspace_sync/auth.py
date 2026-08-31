@@ -156,21 +156,85 @@ def _filter_jar(jar: Iterable[http.cookiejar.Cookie], host: str) -> http.cookiej
     return out
 
 # Session build and verify ---------------------------------------
-def build_session(cfg: Config) -> tuple[requests.Session, dict]:
-    """Returns (session, whoami)"""
+
+# A webview sign-in captured this process. Reused so the GUI's Connect and Sync
+# steps don't each pop a window. Never written to disk.
+_webview_jar_cache: dict[str, http.cookiejar.CookieJar] = {}
+
+
+def _finish_session(cfg: Config, host: str, raw_jar: http.cookiejar.CookieJar,
+                    *, trust_login: bool = False) -> tuple[requests.Session, dict]:
+    session = _session_from_jar(raw_jar, host)
+    # The name-based pre-check gives a faster, clearer error for a stale browser
+    # session - but it would also reject a working session if Brightspace ever
+    # renames its cookies. Skip it when we already watched the user sign in;
+    # _verify (whoami) is the real check either way.
+    if not trust_login:
+        _assert_cookies_usable(session, cfg)
+    whoami = _verify(session, cfg)
+    return session, whoami
+
+
+def _session_via_webview(cfg: Config, host: str) -> tuple[requests.Session, dict]:
+    from .webauth import login_via_webview
+
+    raw_jar = login_via_webview(cfg)
+    result = _finish_session(cfg, host, raw_jar, trust_login=True)
+    _webview_jar_cache[host] = raw_jar
+    return result
+
+
+def build_session(cfg: Config, *, interactive: bool = False) -> tuple[requests.Session, dict]:
+    """Returns (session, whoami).
+
+    `interactive` allows a sign-in window as a fallback when the browser-cookie
+    read fails (GUI: always; CLI: only from a real terminal, never from cron).
+    """
     host = urlparse(cfg.base_url).hostname or ""
 
-    # load jar
-    if cfg.browser == "cookies_txt":
-        raw_jar: http.cookiejar.CookieJar = _load_from_cookies_txt(cfg)
+    # A sign-in from earlier this run - use it before touching the browser again.
+    cached = _webview_jar_cache.get(host)
+    if cached is not None:
+        try:
+            return _finish_session(cfg, host, cached, trust_login=True)
+        except AuthError:
+            _webview_jar_cache.pop(host, None)
+
+    if cfg.browser == "webview":
+        return _session_via_webview(cfg, host)
+
+    try:
+        if cfg.browser == "cookies_txt":
+            raw_jar: http.cookiejar.CookieJar = _load_from_cookies_txt(cfg)
+        else:
+            raw_jar, _ = _load_jar_from_browser(cfg, _registrable_domain(host))
+        return _finish_session(cfg, host, raw_jar)
+    except AuthError as primary_err:
+        if not interactive or cfg.browser == "cookies_txt":
+            raise
+        log.warning("Couldn't use the browser sign-in (%s). Opening a sign-in window.",
+                    str(primary_err).splitlines()[0])
+        try:
+            return _session_via_webview(cfg, host)
+        except AuthError as webview_err:
+            raise _combined_auth_error(primary_err, webview_err) from webview_err
+
+
+def _combined_auth_error(primary_err: "AuthError", webview_err: "AuthError") -> "AuthError":
+    """Both ways in failed. Lead with the automatic-connection fix steps; add the
+    sign-in window outcome as a short trailing line (usually: it was closed)."""
+    from .webauth import WINDOW_CLOSED
+
+    detail = str(webview_err).strip()
+    if WINDOW_CLOSED in detail:
+        tail = ("The sign-in window was closed before sign-in finished, so that "
+                "didn't work either — do one of the above, or finish signing in "
+                "when the window opens.")
     else:
-        raw_jar, _ = _load_jar_from_browser(cfg, _registrable_domain(host))
-
-    session = _session_from_jar(raw_jar, host)
-    _assert_cookies_usable(session, cfg)
-    whoami = _verify(session, cfg)
-
-    return session, whoami
+        tail = ("Opening a sign-in window instead didn't work either:\n"
+                f"{detail}\n"
+                "Do one of the above and try again.")
+    return AuthError(f"{primary_err}\n\n{tail}")
 
 def _session_from_jar(raw_jar: http.cookiejar.CookieJar, host: str) -> requests.Session:
     session = requests.Session()
@@ -304,6 +368,10 @@ def diagnose(cfg: Config) -> int:
     try:
         if cfg.browser == "cookies_txt":
             raw_jar = _load_from_cookies_txt(cfg)
+        elif cfg.browser == "webview":
+            from .webauth import login_via_webview
+            print("  opening a sign-in window ...")
+            raw_jar = login_via_webview(cfg)
         else:
             raw_jar, _ = _load_jar_from_browser(cfg, _registrable_domain(host))
     except AuthError as exc:

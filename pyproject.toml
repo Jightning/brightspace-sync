@@ -24,6 +24,7 @@ dependencies = [
   "rookiepy>=0.5.6",    # reads browser cookies incl. Chrome 127+ app-bound (v20) on Windows
   "PyYAML>=6.0",
   "yt-dlp>=2024.1.1",   # lecture-video downloads (used only when include.videos: true)
+  "pywebview>=5.3,<7",  # sign-in window fallback when the browser-cookie read fails; <7 = opt in to the next major deliberately (get_cookies() shape has moved before)
 ]
 
 [project.scripts]

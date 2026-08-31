@@ -33,7 +33,8 @@ def default_config_path() -> Path:
     """Where the GUI writes config.yaml when there isn't one yet."""
     return app_dir() / "config.yaml"
 
-_VALID_BROWSERS = {"auto", "chrome", "edge", "brave", "firefox", "safari", "cookies_txt"}
+_VALID_BROWSERS = {"auto", "chrome", "edge", "brave", "firefox", "safari",
+                   "cookies_txt", "webview"}
 
 # Known keys in config
 _KNOWN_TOP = {

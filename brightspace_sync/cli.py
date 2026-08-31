@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import json
 import logging
 import sys
 from pathlib import Path
@@ -14,6 +15,15 @@ from .sync import run_sync
 from .util import log, setup_logging
 
 _SECTIONS = ("content", "grades", "news", "assignments", "calendar")
+
+
+def _interactive() -> bool:
+    """A real terminal - so a sign-in window is OK to open. False under cron/launchd."""
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
+
 
 def _notify(msg: str) -> None:
     """
@@ -83,7 +93,7 @@ def _prepare(args) -> Config:
 def cmd_list(args) -> int:
     cfg = _prepare(args)
     try:
-        session, _ = build_session(cfg)
+        session, _ = build_session(cfg, interactive=_interactive())
     except AuthError as exc:
         log.error("%s", exc)
         return 2
@@ -112,7 +122,7 @@ def cmd_list(args) -> int:
 def cmd_whoami(args) -> int:
     cfg = _prepare(args)
     try:
-        _, who = build_session(cfg)
+        _, who = build_session(cfg, interactive=_interactive())
     except AuthError as exc:
         log.error("%s", exc)
         return 2
@@ -132,6 +142,21 @@ def cmd_doctor(args) -> int:
 def cmd_gui(args) -> int:
     from .gui import run_gui
     return run_gui(getattr(args, "config", None))
+
+# `_webview-login`, hidden: open the sign-in window and print its cookies as JSON.
+# Spawned as a child process by webauth.login_via_webview (keeps pywebview off
+# the GUI's main thread).
+def cmd_webview_login(args) -> int:
+    from .webauth import run_login_window
+
+    try:
+        cookies = run_login_window(args.base_url)
+    except Exception as exc:  # noqa: BLE001 - message goes to the parent via stderr
+        print(str(exc), file=sys.stderr)
+        return 3
+    json.dump({"cookies": cookies}, sys.stdout)
+    sys.stdout.write("\n")
+    return 0
 
 # `setup`, wizard that writes config.yaml
 def _ask(prompt: str, default: str = "") -> str:
@@ -174,7 +199,7 @@ def cmd_setup(args) -> int:
     print("\nChecking that we can read your Brightspace session ...")
     courses = []
     try:
-        session, who = build_session(cfg)
+        session, who = build_session(cfg, interactive=True)
         print(f"  OK - signed in as {who.get('FirstName','')} {who.get('LastName','')}".rstrip())
         courses = list_all_courses(Brightspace(session, cfg))
     except AuthError as exc:
@@ -259,6 +284,7 @@ def cmd_sync(args) -> int:
         dry_run=args.dry_run,
         prune=args.prune,
         skip_videos=args.skip_videos,
+        interactive=_interactive(),
     )
 
     if outcome.auth_failed:
@@ -286,7 +312,8 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--profile", metavar="NAME",
                         help="Chrome/Edge/Brave profile folder, e.g. 'Default' or 'Profile 1'")
 
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd", required=True,
+                           metavar="{list,whoami,doctor,setup,gui,sync}")
 
     # `list`
     lp = sub.add_parser("list", parents=[common],
@@ -310,6 +337,11 @@ def build_parser() -> argparse.ArgumentParser:
     # `gui`
     gp = sub.add_parser("gui", help="open the point-and-click window (setup + run)")
     gp.set_defaults(func=cmd_gui)
+
+    # hidden: internal sign-in-window helper, spawned as a child process
+    wl = sub.add_parser("_webview-login")
+    wl.add_argument("base_url")
+    wl.set_defaults(func=cmd_webview_login)
 
     # `sync`
     sp = sub.add_parser("sync", parents=[common], help="download configured courses")

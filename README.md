@@ -52,9 +52,6 @@ Prefix every `brightspace-sync` command below with `uv run` in development
 
 ## Setup
 
-Prefer clicking? `brightspace-sync gui` (or just double-click the downloaded
-file) opens a window for setup + run. Everything below is the command-line path.
-
 Run the wizard (writes to `config.yaml`):
 
 ```bash
@@ -70,9 +67,9 @@ brightspace-sync whoami   # prints your name — confirms auth works
 brightspace-sync doctor   # full diagnosis if it doesn't
 ```
 
-> Mac will show a "wants to use your keychain" / "Chrome Safe Storage" prompt.
-> It's just for the OS to allow the script to read the browser's cookie file,
-> click **Allow** for the script to work.
+> If automatically reading the cookies fails, a webview with the Brightspace
+> login opens, and the cookies are read from there. Set `browser: webview`
+> to always use the window.
 
 ## Config
 

@@ -10,6 +10,11 @@ succeed for a while, then start failing until you next open Brightspace. With
 `--notify-on-auth-failure` it exits cleanly and shows one desktop notification
 when that happens (no password prompts, no retry loop).
 
+The sign-in window only opens for runs you start yourself in a terminal or the
+GUI — a scheduled run never pops a window, it just fails as above. If you want a
+scheduled job to survive a bit longer, point `browser: cookies_txt` at a
+cookies.txt you export by hand; it still expires, but on your terms.
+
 Assumes `brightspace-sync` is on your `PATH` (installed via `pipx`/`uv`, or the
 downloaded binary placed somewhere on `PATH`) and a `config.yaml` exists in the
 directory you run from — adjust the `cd` / `--config` path as needed.

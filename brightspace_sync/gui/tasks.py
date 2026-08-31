@@ -54,7 +54,7 @@ class ConnectWorker(threading.Thread):
 
     def run(self) -> None:
         try:
-            session, who = build_session(self._cfg)
+            session, who = build_session(self._cfg, interactive=True)
         except AuthError as exc:
             self._q.put(("connect_failed", str(exc)))
             return
@@ -90,17 +90,20 @@ class SyncWorker(threading.Thread):
     def __init__(self, cfg: Config, q: "queue.Queue[tuple]"):
         super().__init__(daemon=True)
         self._cfg, self._q = cfg, q
-        self._stop = threading.Event()
+        # NOT `_stop` - that name shadows threading.Thread._stop() and breaks
+        # is_alive() once the thread has finished.
+        self._cancel = threading.Event()
 
     def stop(self) -> None:
-        self._stop.set()
+        self._cancel.set()
 
     def run(self) -> None:
         try:
             outcome = run_sync(
                 self._cfg,
                 on_progress=lambda frac, msg: self._q.put(("progress", frac, msg)),
-                should_stop=self._stop.is_set,
+                should_stop=self._cancel.is_set,
+                interactive=True,
             )
         except Exception as exc:  # noqa: BLE001
             self._q.put(("sync_crashed", f"{type(exc).__name__}: {exc}"))

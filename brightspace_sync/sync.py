@@ -54,6 +54,7 @@ def run_sync(
     skip_videos: bool = False,
     on_progress: Optional[ProgressCb] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    interactive: bool = False,
 ) -> SyncOutcome:
     out = SyncOutcome()
     do_prune = prune or cfg.prune
@@ -62,7 +63,7 @@ def run_sync(
     # Authenticate
     _report(on_progress, 0.0, "Connecting to Brightspace...")
     try:
-        session, whoami = build_session(cfg)
+        session, whoami = build_session(cfg, interactive=interactive)
     except AuthError as exc:
         out.auth_failed = True
         out.errors.append(str(exc))

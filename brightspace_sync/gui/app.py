@@ -20,7 +20,7 @@ from .tasks import ConnectWorker, SyncWorker, attach_log, detach_log
 from .theme import install as install_theme
 from .widgets import Collapsible, ScrollFrame, Tooltip
 
-_BROWSERS = ["chrome", "edge", "brave", "firefox", "safari", "cookies_txt", "auto"]
+_BROWSERS = ["chrome", "edge", "brave", "firefox", "safari", "webview", "cookies_txt", "auto"]
 _QUALITIES = ["best", "1080", "720", "480"]
 _SECTIONS = [
     ("content", "Course content & files", "Readings, pages and files posted under Content."),
@@ -100,7 +100,9 @@ class App(tk.Tk):
         ttk.Label(self.connect, justify="left", wraplength=600, style="Muted.TLabel",
                   text="This uses the Brightspace login your web browser already has — "
                        "no password is asked for or stored. Sign in to Brightspace in "
-                       "that browser first, then connect here.").pack(anchor="w", pady=(4, 14))
+                       "that browser first, then connect here. If it can't read that "
+                       "login, a sign-in window opens so you can sign in directly.").pack(
+                           anchor="w", pady=(4, 14))
 
         form = ttk.Frame(self.connect)
         form.pack(anchor="w", fill="x")
@@ -120,7 +122,8 @@ class App(tk.Tk):
                           state="readonly", width=16)
         cb.grid(row=1, column=1, sticky="w", padx=8)
         Tooltip(cb, "The browser you normally use for Brightspace. 'auto' tries the "
-                    "common ones. 'cookies_txt' is an advanced manual option.")
+                    "common ones. 'webview' skips the browser and always opens a "
+                    "sign-in window. 'cookies_txt' is an advanced manual option.")
 
         prof_help = ("Leave this as “Default” unless you use more than one profile in "
                      "Chrome/Edge/Brave. To find its name: open a new tab at "
@@ -143,7 +146,7 @@ class App(tk.Tk):
         self.lbl_conn.pack(anchor="w")
 
         self.conn_error = ttk.Frame(self.connect, padding=(0, 8, 0, 0))
-        self.conn_error_box = tk.Text(self.conn_error, height=9, wrap="word",
+        self.conn_error_box = tk.Text(self.conn_error, height=13, wrap="word",
                                       state="disabled", font=("", 11),
                                       highlightthickness=0)
         self.conn_error_box.pack(fill="both", expand=True)
@@ -204,7 +207,8 @@ class App(tk.Tk):
 
         # show the user only the plain-language part: drop parenthetical
         # "(last error: <python exception>)" tails and any "TypeName: repr" lines.
-        clean = re.sub(r"\s*\(last error:.*?\)", "", msg, flags=re.DOTALL)
+        # greedy to the last ')' on the line so nested parens (KeyError(1)) go too.
+        clean = re.sub(r" *\(last error:[^\n]*\)", "", msg)
         lines, kept = clean.splitlines(), []
         for ln in lines:
             s = ln.strip()
@@ -216,7 +220,7 @@ class App(tk.Tk):
         box = self.conn_error_box
         box.configure(state="normal")
         box.delete("1.0", "end")
-        box.insert("end", "Couldn't read a Brightspace session\n", ("hdr",))
+        box.insert("end", "Couldn't sign in to Brightspace\n", ("hdr",))
         box.insert("end", "\n" + clean + "\n")
         box.configure(state="disabled")
         self.conn_error.pack(fill="both", expand=True, pady=(10, 0))
@@ -595,7 +599,11 @@ class App(tk.Tk):
         return cfg.data_dir if cfg else Path(self.v_dir.get())
 
     def _on_close(self) -> None:
-        if self._sync_worker and self._sync_worker.is_alive():
+        try:
+            running = bool(self._sync_worker and self._sync_worker.is_alive())
+        except Exception:  # noqa: BLE001 - never let a thread quirk trap the user
+            running = False
+        if running:
             if not messagebox.askokcancel("Quit", "A download is running. Stop it and quit?"):
                 return
             self._sync_worker.stop()

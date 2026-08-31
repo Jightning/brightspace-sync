@@ -1,8 +1,12 @@
 # Brightspace host, this one is for Purdue
 base_url: https://purdue.brightspace.com
 
-# Where the browser cookies are read from
-# auto | chrome | edge | brave | firefox | safari | cookies_txt
+# Where the Brightspace session is read from
+# auto | chrome | edge | brave | firefox | safari | cookies_txt | webview
+#   auto/chrome/...  read the login your browser already has
+#   webview          always open a sign-in window (no browser cookie read)
+#   cookies_txt      read a cookies.txt you exported yourself (see cookies_txt_path)
+# Any of the browser options falls back to the sign-in window if the read fails.
 browser: chrome
 
 # Which profile folder to read (blank = default profile)

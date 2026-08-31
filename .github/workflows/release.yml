@@ -36,6 +36,8 @@ jobs:
           pyinstaller --onefile --name brightspace-sync \
             --collect-all rookiepy \
             --collect-all yt_dlp \
+            --collect-all webview \
+            --collect-all proxy_tools \
             run.py
       - name: Rename
         shell: bash
