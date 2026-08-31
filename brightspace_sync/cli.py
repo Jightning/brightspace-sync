@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import logging
 import sys
+from pathlib import Path
 
 from .auth import AuthError, build_session, diagnose
 from .client import Brightspace
@@ -118,6 +120,109 @@ def cmd_doctor(args) -> int:
     cfg = _prepare(args)
     return diagnose(cfg)
 
+
+# `setup`, wizard that writes config.yaml
+def _ask(prompt: str, default: str = "") -> str:
+    suffix = f" [{default}]" if default else ""
+    try:
+        got = input(f"{prompt}{suffix}: ").strip()
+    except EOFError:
+        got = ""
+    return got or default
+
+def _ask_yesno(prompt: str, default: bool = False) -> bool:
+    d = "Y/n" if default else "y/N"
+    ans = _ask(f"{prompt} ({d})").lower()
+    if not ans:
+        return default
+    return ans[0] == "y"
+
+def cmd_setup(args) -> int:
+    path = Path(getattr(args, "config", None) or "config.yaml").expanduser()
+    print(f"This writes {path}. Ctrl-C to abort.\n")
+    if path.exists() and not _ask_yesno(f"{path.name} already exists - overwrite?", False):
+        print("Left it alone.")
+        return 0
+
+    base_url = _ask("Your school's Brightspace address", "https://purdue.brightspace.com").rstrip("/")
+    if not base_url.startswith("https://"):
+        base_url = "https://" + base_url.lstrip("/")
+
+    print("\nWhich browser are you signed in to Brightspace with?")
+    print("  chrome / edge / brave / firefox / safari, or 'cookies_txt' for a manual export")
+    browser = _ask("browser", "chrome").lower()
+    if browser not in _VALID_BROWSERS:
+        print(f"  '{browser}' is not one of {sorted(_VALID_BROWSERS)} - using chrome")
+        browser = "chrome"
+
+    cfg = Config()
+    cfg.base_url = base_url
+    cfg.browser = browser
+
+    print("\nChecking that we can read your Brightspace session ...")
+    courses = []
+    try:
+        session, who = build_session(cfg)
+        print(f"  OK - signed in as {who.get('FirstName','')} {who.get('LastName','')}".rstrip())
+        courses = list_all_courses(Brightspace(session, cfg))
+    except AuthError as exc:
+        print(f"\n  Couldn't authenticate yet:\n  {exc}\n")
+        if not _ask_yesno("Save the config anyway so you can fix this and re-run?", True):
+            return 2
+
+    mode, allow_block = "all", "    []"
+    if courses:
+        print(f"\nYou're in {len(courses)} courses:\n")
+        for i, c in enumerate(courses, 1):
+            print(f"  {i:>3}. {c.code or '':<28} {c.name}")
+        pick = _ask("\nWhich to sync? comma-separated numbers, or 'all'", "all").lower()
+        if pick not in ("all", "", "*"):
+            want = set()
+            for tok in pick.replace(" ", "").split(","):
+                if tok.isdigit() and 1 <= int(tok) <= len(courses):
+                    want.add(int(tok) - 1)
+            chosen = [courses[i] for i in sorted(want)]
+            if chosen:
+                mode = "allowlist"
+                allow_block = "\n".join(
+                    f'    - id: {c.id}'.ljust(20) + f"  # {c.name}" for c in chosen)
+
+    videos = _ask_yesno("\nDownload embedded lecture videos too? (more bandwidth)", False)
+
+    path.write_text(_config_yaml(base_url, browser, mode, allow_block, videos), "utf-8")
+    print(f"\nWrote {path}")
+    print("Next:  brightspace-sync sync"
+          + ("    (or `brightspace-sync doctor` if auth still fails)" if not courses else ""))
+    return 0
+
+def _config_yaml(base_url: str, browser: str, mode: str, allow_block: str, videos: bool) -> str:
+    today = _dt.date.today().isoformat()
+    return f"""# Written by `brightspace-sync setup` on {today}.
+# Full reference: config.example.yaml
+
+base_url: {base_url}
+browser: {browser}
+chrome_profile:
+
+data_dir: bs_data          # everything written goes here
+
+include:
+  content: true
+  grades: true
+  news: true
+  assignments: true
+  calendar: false
+  videos: {str(videos).lower()}
+
+courses:
+  mode: {mode}             # allowlist (only what's listed) | all (everything)
+  allow:
+{allow_block}
+  ignore:
+    - match: "Sandbox"
+  map: []                  # rename / merge course folders - see config.example.yaml
+"""
+
 # `sync`, the main command for retrieving the Brightspace data
 def cmd_sync(args) -> int:
     cfg = _prepare(args)
@@ -152,8 +257,8 @@ def cmd_sync(args) -> int:
 # Here are all the arguments for the cli
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="brightspace_sync",
-        description="Brightspace course retrieval.",
+        prog="brightspace-sync",
+        description="Download your own Brightspace course material to a local folder.",
     )
     p.add_argument("-c", "--config", help="path to config.yaml")
     p.add_argument("-v", "--verbose", action="store_true", help="debug logging")
@@ -180,6 +285,10 @@ def build_parser() -> argparse.ArgumentParser:
     dp = sub.add_parser("doctor", parents=[common],
                         help="diagnose cookie / authentication problems")
     dp.set_defaults(func=cmd_doctor)
+
+    # `setup`
+    stp = sub.add_parser("setup", help="interactive first-run: writes config.yaml")
+    stp.set_defaults(func=cmd_setup)
 
     # `sync`
     sp = sub.add_parser("sync", parents=[common], help="download configured courses")

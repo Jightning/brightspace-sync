@@ -10,28 +10,56 @@ Upon running, this will place all the data within a local folder defined in `con
 A manifest is kept, so that if you run again, it'll just pull what's been changed since the last run.
 
 ---
+[rel]: https://github.com/Jightning/brightspace-sync/releases/latest
+
+## Install
+
+### Option A: download
+
+Get the file for your OS from the [latest release][rel]:
+
+| OS | file |
+| ---- | ------ |
+| macOS (Apple Silicon) | `brightspace-sync-macos-arm64` |
+| macOS (Intel) | `brightspace-sync-macos-x64` |
+| Windows | `brightspace-sync-windows-x64.exe` |
+| Linux | `brightspace-sync-linux-x64` |
+
+### Option B: with Python (3.9+)
+
+```bash
+uv tool install git+https://github.com/Jightning/brightspace-sync
+# or: 
+pipx install git+https://github.com/Jightning/brightspace-sync
+```
+
+---
+
+### Development
+
+```bash
+uv sync
+uv run brightspace-sync
+uv run pytest
+```
+
+Prefix every `brightspace-sync` command below with `uv run` in development
 
 ## Setup
 
-Needs Python 3.9+ and a browser you use for Brightspace.
+Run the wizard (writes to `config.yaml`):
 
 ```bash
-python3 -m venv .venv
-./.venv/bin/pip install -r requirements.txt
-
-cp config.example.yaml config.yaml
+brightspace-sync setup
 ```
 
-In `config.yaml` set `browser` to the browser you use.
-If you keep Brightspace in a non-default Chrome profile, set `chrome_profile`.
+Or copy `config.example.yaml` to `config.yaml` and edit from there (options commented)
 
-Everything written goes into `bs_data/` (changeable within the config) (.gitignored)
-
-### Confirm it can read from Brightspace
+Outputs will go to `bs_data/` (.gitignored)
 
 ```bash
-./.venv/bin/python -m brightspace_sync whoami # prints your name
-./.venv/bin/python -m brightspace_sync doctor # full diagnosis
+brightspace-sync whoami   # prints your name — confirms auth works
+brightspace-sync doctor   # full diagnosis if it doesn't
 ```
 
 > Mac will show a "wants to use your keychain" / "Chrome Safe Storage" prompt.
@@ -45,7 +73,7 @@ Everything written goes into `bs_data/` (changeable within the config) (.gitigno
 ### Select the courses you want to retrieve
 
 ```bash
-./.venv/bin/python -m brightspace_sync list
+brightspace-sync list
 ```
 
 This will print `- match:` lines for each course.
@@ -76,7 +104,7 @@ Renaming a mapped folder later within the config is fine.
 ## Usage
 
 ```bash
-./.venv/bin/python -m brightspace_sync sync  # main retrieval
+brightspace-sync sync  # main retrieval
 
 --course 123456       # Only sync one course (using Brightspace org-unit id)
 --only content,grades # only sync these
@@ -186,3 +214,14 @@ cp scripts/com.user.brightspace-sync.plist.example ~/Library/LaunchAgents/com.us
 launchctl load   ~/Library/LaunchAgents/com.user.brightspace-sync.plist
 launchctl unload ~/Library/LaunchAgents/com.user.brightspace-sync.plist   # to stop
 ```
+
+---
+
+## Is this allowed?
+
+You're downloading your own course materials — ones you can already open in a
+browser — through the same interface the browser uses, when you ask it to. Not
+legal advice: still skim your university's IT acceptable-use policy and any "no
+automated access" line in a syllabus (a professor can set stricter rules for
+their course — just exclude it in `config.yaml`). Don't point it at an account
+that isn't yours, and don't lower the rate limit.

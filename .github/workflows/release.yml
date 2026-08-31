@@ -1,0 +1,71 @@
+# Build a standalone executable for each OS and attach them to a GitHub Release.
+# Trigger: push a tag like `v1.0.0`  (or run manually from the Actions tab).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: brightspace-sync-linux-x64
+          - os: macos-latest          # Apple Silicon
+            asset: brightspace-sync-macos-arm64
+          - os: macos-13              # Intel
+            asset: brightspace-sync-macos-x64
+          - os: windows-latest
+            asset: brightspace-sync-windows-x64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install . pyinstaller
+      - name: Build
+        shell: bash
+        run: |
+          pyinstaller --onefile --name brightspace-sync \
+            --collect-all browser_cookie3 \
+            run.py
+      - name: Rename
+        shell: bash
+        run: |
+          cd dist
+          if [ -f brightspace-sync.exe ]; then
+            mv brightspace-sync.exe "${{ matrix.asset }}"
+          else
+            mv brightspace-sync "${{ matrix.asset }}"
+            chmod +x "${{ matrix.asset }}"
+          fi
+      - name: Smoke test
+        shell: bash
+        run: ./dist/"${{ matrix.asset }}" --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

@@ -8,5 +8,12 @@ cookies.txt
 .venv/
 __pycache__/
 *.pyc
+uv.lock
+
+# build artifacts (pip / hatch / pyinstaller)
+/build/
+/dist/
+*.egg-info/
+*.spec
 
 read.md

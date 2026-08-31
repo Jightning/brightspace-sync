@@ -3,7 +3,7 @@ Traverses a course's Content tree
 
 A course's content is split into modules, with each one having either a child module or a topic.
 Topics are either files or links
- 
+
 Output layout under <course folder>/Content/:
     <Module>/<Submodule>/<Topic Title>.<ext>      # file topics
     <Module>/<Submodule>/<Topic Title>.url        # link topics (INI shortcut)
@@ -286,8 +286,7 @@ def _handle_embed(html_path, topic_id, ou, base_url, node, manifest, stats, *,
             stats.videos += 1
             log.info("  video      %s", path.name)
     elif status == "no-ytdlp":
-        log.warning("  include.videos is on but yt-dlp is not installed - "
-                    "run `pip install -r requirements.txt` or `brew install yt-dlp`")
+        log.warning("  include.videos is on but yt-dlp was not found")
     else:
         manifest.touch(vkey)  # keep any earlier copy safe from --prune
         stats.video_errors += 1

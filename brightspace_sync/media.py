@@ -31,8 +31,8 @@ _MARKER_RE = re.compile(r"<!--\s*" + re.escape(_MARKER) + r"\s*(\{.*?\})\s*-->",
 
 @dataclass
 class MediaInfo:
-    provider: str            # kaltura | youtube | vimeo | panopto | iframe
-    embed_url: str           # absolute URL of the iframe
+    provider: str  # kaltura | youtube | vimeo | panopto | iframe
+    embed_url: str  # absolute URL of the iframe
     entry_id: str | None = None
     partner_id: str | None = None
 
@@ -153,9 +153,11 @@ def write_pointer(dest: Path, stream_page: str) -> None:
 
 # Download -----------------------
 def find_ytdlp() -> str | None:
-    cand = Path(sys.executable).with_name("yt-dlp")
-    if cand.is_file():
-        return str(cand)
+    # next to this executable (works for the frozen build: drop yt-dlp beside it)
+    for base in {Path(sys.executable).parent, Path(sys.argv[0]).resolve().parent}:
+        for name in ("yt-dlp", "yt-dlp.exe"):
+            if (base / name).is_file():
+                return str(base / name)
     return shutil.which("yt-dlp")
 
 

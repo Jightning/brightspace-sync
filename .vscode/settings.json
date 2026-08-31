@@ -10,8 +10,11 @@
         "microsoftonline",
         "myenrollments",
         "osascript",
+        "panopto",
+        "pipx",
         "samlrequest",
         "tmpl",
+        "youtu",
         "ytdlp"
     ]
 }
