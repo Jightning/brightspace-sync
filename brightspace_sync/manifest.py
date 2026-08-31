@@ -19,6 +19,9 @@ MANIFEST_NAME = ".bs_manifest.json"
 SECTION_PREFIX = {
     "video:": "videos",
     "topic:": "content",
+    "moddesc:": "content",    # module description text/html
+    "topicdesc:": "content",  # topic description text/html
+    "asset:": "content",      # images pulled out of description html
     "news:": "news",
     "dropbox:": "assignments",
 }

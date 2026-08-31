@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html as _html
 import logging
 import re
 import unicodedata
@@ -9,14 +10,41 @@ from pathlib import Path
 
 log = logging.getLogger("brightspace_sync")
 
-def setup_logging(verbose: bool = False) -> None:
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s  %(levelname)-7s %(message)s",
-        datefmt="%H:%M:%S",
-    )
+_CONSOLE_FMT = logging.Formatter("%(asctime)s  %(levelname)-7s %(message)s", "%H:%M:%S")
 
+
+def setup_logging(verbose: bool = False) -> None:
+    """Console logging. The file log (added later in cli._prepare) always records
+    DEBUG; the console shows INFO unless -v/--verbose."""
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)  # let handlers decide what to show/keep
+    if not any(getattr(h, "_bs_console", False) for h in root.handlers):
+        con = logging.StreamHandler()
+        con._bs_console = True  # type: ignore[attr-defined]
+        con.setFormatter(_CONSOLE_FMT)
+        root.addHandler(con)
+    for h in root.handlers:
+        if getattr(h, "_bs_console", False):
+            h.setLevel(logging.DEBUG if verbose else logging.INFO)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\n{3,}")
+
+
+def html_to_text(markup: str) -> str:
+    """Rough HTML -> readable plain text (keeps line breaks / list bullets)."""
+    if not markup:
+        return ""
+    t = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", "", markup)
+    t = re.sub(r"(?i)<br\s*/?>", "\n", t)
+    t = re.sub(r"(?i)</p\s*>", "\n\n", t)
+    t = re.sub(r"(?i)<li[^>]*>", "\n- ", t)
+    t = re.sub(r"(?i)</(div|h[1-6]|tr|ul|ol)\s*>", "\n", t)
+    t = _TAG_RE.sub("", t)
+    t = _html.unescape(t)
+    return _WS_RE.sub("\n\n", t).strip()
 
 _slug_strip = re.compile(r"[^\w\s.\-()&]+", re.UNICODE)
 _slug_ws = re.compile(r"[\s_]+")

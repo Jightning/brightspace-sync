@@ -53,6 +53,14 @@ class Brightspace:
         """Learning Environment (LE) API path"""
         return f"/d2l/api/le/{self.version('le')}{path}"
 
+    def le_unstable(self, path: str) -> str:
+        """
+        Learning Environment 'unstable' route 
+        This is the only place the new content experience exposes
+        module/topic Description HTML (the text shown above/below topics).
+        """
+        return f"/d2l/api/le/unstable{path}"
+
     def lp(self, path: str) -> str:
         """Learning Platform (LP) API path"""
         return f"/d2l/api/lp/{self.version('lp')}{path}"

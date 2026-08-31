@@ -61,13 +61,21 @@ def _prepare(args) -> Config:
     if getattr(args, "profile", None):
         cfg.chrome_profile = args.profile
     try:
+        from logging.handlers import RotatingFileHandler
         cfg.log_dir.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(cfg.log_dir / "brightspace_sync.log")
-        fh.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-7s %(message)s"))
-        logging.getLogger("brightspace_sync").addHandler(fh)
+        logfile = cfg.log_dir / "brightspace_sync.log"
+        
+        # keep the last 3 runs
+        fh = RotatingFileHandler(logfile, maxBytes=5_000_000, backupCount=2, encoding="utf-8")
+        if logfile.exists() and logfile.stat().st_size > 0:
+            fh.doRollover()
+        fh.setLevel(logging.DEBUG)  # file always gets full detail
+        fh.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-7s %(name)s: %(message)s"))
+        logging.getLogger().addHandler(fh)
     except OSError:
         pass
-    log.info("config: %s", cfg.source_path)
+    log.info("brightspace-sync %s", __import__("brightspace_sync").__version__)
+    log.info("config:   %s", cfg.source_path)
     log.info("data_dir: %s", cfg.data_dir)
     return cfg
 

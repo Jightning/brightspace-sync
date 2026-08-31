@@ -1,32 +1,45 @@
 """
-Traverses a course's Content tree
+Traverses a course's Content tree and mirrors it locally.
 
-A course's content is split into modules, with each one having either a child module or a topic.
-Topics are either files or links
+Modules contain submodules and topics; topics are files or links. Modules and
+topics can also carry rich text (paragraphs / images shown above and below the
+linked files) - that lives in the 'unstable' TOC endpoint's Description field,
+which is what this module reads first.
 
 Output layout under <course folder>/Content/:
-    <Module>/<Submodule>/<Topic Title>.<ext>      # file topics
-    <Module>/<Submodule>/<Topic Title>.url        # link topics (INI shortcut)
+    <Module>/<Submodule>/<Topic Title>.<ext>       # file topics
+    <Module>/<Submodule>/<Topic Title>.url         # link topics (INI shortcut)
+    <Module>/_module.md, _module.html              # a module's own rich text
+    <Module>/<Topic Title> - notes.md/.html        # a topic's rich text
+    <Module>/_assets/                               # images pulled from that text
 Plus:
-    content_index.json   machine-readable tree with local paths + metadata
-    content_index.md     human-readable outline
+    content_index.json   machine-readable tree (paths, descriptions, metadata)
+    content_index.md     human-readable outline with the text inline
 """
 
 from __future__ import annotations
 
+import html as _html
 import json
+import mimetypes
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import unquote
 
 from . import media
 from .client import Brightspace
 from .download import download_to
 from .enrollments import Course
 from .manifest import Manifest
-from .util import log, now_iso, slugify
+from .util import html_to_text, log, now_iso, slugify
 
 TOPIC_FILE = 1
 TOPIC_LINK = 3
+
+_IMG_SRC_RE = re.compile(r'(<img\b[^>]*?\bsrc=")([^"]+)("[^>]*>)', re.I)
+_ASSET_CAP = 40                 # max images pulled per description
+_MAX_DESC_HTML = 1_500_000      # skip asset-pulling on huge html blobs
 
 _MODULE_HINTS = ("Structure", "ModuleStartDate", "ModuleEndDate", "ModuleDueDate")
 
@@ -41,6 +54,8 @@ class Stats:
     embeds: int = 0
     videos: int = 0
     video_errors: int = 0
+    descriptions: int = 0   # module/topic rich-text blocks saved
+    assets: int = 0         # images pulled out of that rich text
     error_detail: list[str] = field(default_factory=list)
 
     def add(self, action: str, detail: str = "") -> None:
@@ -63,6 +78,14 @@ def _is_module(obj: dict) -> bool:
     
     return obj.get("Type") in (0, "0", "Module")
 
+@dataclass
+class _Ctx:
+    force: bool
+    dry_run: bool
+    video_opts: "media.VideoOpts | None"
+    base_url: str
+
+
 def sync_content(
     bs: Brightspace,
     course: Course,
@@ -73,28 +96,250 @@ def sync_content(
     dry_run: bool,
     video_opts: "media.VideoOpts | None" = None,
 ) -> Stats:
-    """
-    Fetches root modules from the Brightspace API.
-    For each module, it recursively walks the tree, collects all nodes into an index list, and write into index files.
+    """Walk the whole content tree and mirror it locally.
+
+    Primary source is the 'unstable' TOC endpoint (for the rich-text within a module)
+    Falls back to the classic per-module crawl if that endpoint isn't available.
     """
     stats = Stats()
     content_root = course_dir / "Content"
     ou = course.id
-
-    roots = bs.get_json(bs.le(f"/{ou}/content/root/"), default=[]) or []
-    if not roots:
-        log.info("  no content modules visible")
-        return stats
-
+    ctx = _Ctx(force, dry_run, video_opts, bs.base)
     index: list[dict] = []
-    for module in roots:
-        node = _walk_module(bs, ou, module, content_root, ["Content"], manifest,
-                            stats, force=force, dry_run=dry_run, video_opts=video_opts)
-        if node:
-            index.append(node)
 
+    toc = bs.get_json(bs.le_unstable(f"/{ou}/content/toc"), default=None)
+    if isinstance(toc, dict) and isinstance(toc.get("Modules"), list):
+        log.debug("using unstable TOC (%d root modules)", len(toc["Modules"]))
+        for m in toc["Modules"]:
+            node = _walk_toc(bs, ou, m, content_root, ["Content"], manifest, stats, ctx)
+            if node:
+                index.append(node)
+    else:
+        log.info("  content TOC endpoint unavailable - using the classic crawl "
+                 "(module/topic descriptions may be missing)")
+        roots = bs.get_json(bs.le(f"/{ou}/content/root/"), default=[]) or []
+        for module in roots:
+            node = _walk_module(bs, ou, module, content_root, ["Content"], manifest,
+                                stats, force=force, dry_run=dry_run, video_opts=video_opts)
+            if node:
+                index.append(node)
+
+    if not index:
+        log.info("  no content modules visible")
     _write_index(course, content_root, index, dry_run=dry_run)
     return stats
+
+
+# Table of Contents (TOC) based traversal -------------------
+def _walk_toc(bs, ou, m, base_dir, path_parts, manifest, stats, ctx: _Ctx):
+    mid = m.get("ModuleId")
+    title = _html.unescape(m.get("Title") or "") or f"Module {mid}"
+    here = path_parts + [slugify(title)]
+    dir_here = base_dir / slugify(title)
+    subs = m.get("Modules") or []
+    topics = m.get("Topics") or []
+    last_mod = m.get("LastModifiedDate")
+
+    log.info("  module: %s  (%d topics, %d submodules)",
+             "/".join(here[1:]) or title, len(topics), len(subs))
+
+    node: dict = {
+        "type": "module", "id": mid, "title": title, "path": "/".join(here),
+        "last_modified": last_mod, "hidden": bool(m.get("IsHidden")),
+        "description": None, "children": [],
+    }
+    node["description"] = _save_description(
+        bs, ou, m.get("Description"), dir_here=dir_here, base_name="_module",
+        manifest=manifest, key=f"moddesc:{mid}", last_modified=last_mod,
+        ctx=ctx, stats=stats, label=title)
+
+    for sm in subs:
+        c = _walk_toc(bs, ou, sm, dir_here, here, manifest, stats, ctx)
+        if c:
+            node["children"].append(c)
+    for t in topics:
+        c = _handle_toc_topic(bs, ou, t, dir_here, here, manifest, stats, ctx)
+        if c:
+            node["children"].append(c)
+    return node
+
+
+def _handle_toc_topic(bs, ou, t, dir_here, path_parts, manifest, stats, ctx: _Ctx):
+    tid = t.get("TopicId")
+    if tid is None:
+        return None
+    title = _html.unescape(t.get("Title") or "") or f"Topic {tid}"
+    typ = (t.get("TypeIdentifier") or "").lower()
+    url = t.get("Url") or ""
+    last_mod = t.get("LastModifiedDate")
+    key = f"topic:{tid}"
+    log.debug("  topic %s '%s' type=%s url=%s", tid, title, typ or "?", url)
+
+    node: dict = {
+        "type": "topic", "id": tid, "title": title, "topic_type": typ,
+        "path": "/".join(path_parts + [title]), "last_modified": last_mod,
+        "hidden": bool(t.get("IsHidden")), "source_url": url,
+        "content_url": t.get("ContentUrl"), "description": None, "local_path": None,
+    }
+    node["description"] = _save_description(
+        bs, ou, t.get("Description"), dir_here=dir_here,
+        base_name=slugify(title, max_len=90) + " - notes", manifest=manifest,
+        key=f"topicdesc:{tid}", last_modified=last_mod, ctx=ctx, stats=stats, label=title)
+
+    is_link = (
+        typ == "link"
+        or url.startswith("/d2l/")
+        or (url.startswith("http") and "/content/enforced/" not in url)
+    )
+    if is_link:
+        target = url if url.startswith("http") else f"{ctx.base_url}{url}"
+        local = _write_link(dir_here, title, target, dry_run=ctx.dry_run)
+        node["local_path"] = str(local) if local else None
+        stats.links += 1
+        manifest.record(key, last_modified=last_mod, local=local or dir_here,
+                        extra={"kind": "link", "url": target, "title": title})
+        return node
+
+    prefer = (url.split("?")[0].split("/")[-1] or None) if url else None
+    fallback = slugify(title, max_len=100)
+    res = download_to(
+        bs, bs.le(f"/{ou}/content/topics/{tid}/file"), dest_dir=dir_here,
+        fallback_name=fallback, manifest=manifest, key=key, last_modified=last_mod,
+        force=ctx.force, dry_run=ctx.dry_run, prefer_name=prefer)
+    if res.action == "error" and url and not url.startswith("http"):
+        res = download_to(
+            bs, url, dest_dir=dir_here, fallback_name=fallback, manifest=manifest,
+            key=key, last_modified=last_mod, force=ctx.force, dry_run=ctx.dry_run,
+            prefer_name=prefer)
+
+    node["local_path"] = str(res.path)
+    stats.add(res.action, f"{title}: {res.error}" if res.error else "")
+    if res.action == "error":
+        log.warning("  could not download topic %s (%s): %s", tid, title, res.error)
+        return node
+    manifest.entries.setdefault(key, {}).update({"kind": "file", "title": title})
+    if Path(res.path).suffix.lower() in (".html", ".htm"):
+        _handle_embed(res.path, tid, ou, ctx.base_url, node, manifest, stats,
+                      title=title, last_mod=last_mod, video_opts=ctx.video_opts,
+                      dry_run=ctx.dry_run)
+    return node
+
+
+# Rich Text within a module -> local .md / .html + pulled images --------------
+def _save_description(bs, ou, desc, *, dir_here: Path, base_name: str, manifest: Manifest,
+                      key: str, last_modified, ctx: _Ctx, stats: Stats, label: str):
+    desc = desc or {}
+    html = (desc.get("Html") or "").strip()
+    text = (desc.get("Text") or "").strip()
+    if not html and not text:
+        return None
+
+    body_text = text or html_to_text(html)
+    md_path = dir_here / f"{base_name}.md"
+    html_path = dir_here / f"{base_name}.html"
+
+    if ctx.dry_run:
+        stats.descriptions += 1
+        return {"text": body_text}
+
+    # Unchanged since last run? Don't rewrite files or re-fetch images.
+    if not ctx.force and manifest.unchanged(key, last_modified=last_modified):
+        manifest.touch(key)
+        stats.descriptions += 1
+        return {"text": body_text,
+                "md": str(md_path) if md_path.exists() else None,
+                "html": str(html_path) if html_path.exists() else None}
+
+    dir_here.mkdir(parents=True, exist_ok=True)
+    md_path.write_text(f"# {label}\n\n{body_text}\n", "utf-8")
+    result = {"md": str(md_path), "text": body_text, "html": None}
+
+    if html:
+        page, n_assets = _pull_assets(html, dir_here, bs, ctx.base_url, manifest, key)
+        stats.assets += n_assets
+        html_path.write_text(_wrap_html(label, page, ctx.base_url), "utf-8")
+        result["html"] = str(html_path)
+        manifest.record(key, last_modified=last_modified, local=html_path,
+                        extra={"kind": "description", "title": label})
+    else:
+        manifest.record(key, last_modified=last_modified, local=md_path,
+                        extra={"kind": "description", "title": label})
+
+    stats.descriptions += 1
+    log.info("  text:   %s", label)
+    return result
+
+
+def _wrap_html(label: str, body: str, base_url: str) -> str:
+    return (
+        f'<!doctype html><meta charset="utf-8"><title>{_html.escape(label)}</title>'
+        f'<base href="{_html.escape(base_url)}/">'
+        "<style>body{font:15px/1.6 system-ui,-apple-system,sans-serif;margin:2rem;"
+        "max-width:820px}img{max-width:100%;height:auto}</style>"
+        f"<h1>{_html.escape(label)}</h1>\n{body}\n"
+    )
+
+
+def _pull_assets(html: str, dir_here: Path, bs, base_url: str, manifest: Manifest,
+                 key_prefix: str) -> tuple[str, int]:
+    """Download <img> sources that live on the Brightspace host into _assets/ and
+    rewrite them to relative paths; make any others absolute so the page still
+    renders online."""
+    if len(html) > _MAX_DESC_HTML:
+        return html, 0
+    assets_dir = dir_here / "_assets"
+    n = 0
+
+    def repl(m: "re.Match[str]") -> str:
+        # groups: pre = '<img ... src="', src = the url, post = '"...>'
+        nonlocal n
+        pre, src, post = m.group(1), m.group(2), m.group(3)
+        s = _html.unescape(src).strip()
+        if s.startswith("data:") or not s:
+            return m.group(0)
+        if s.startswith("//"):
+            s = "https:" + s
+        if s.startswith("/"):
+            if n < _ASSET_CAP:
+                name = _fetch_asset(bs, s, assets_dir, manifest, f"{key_prefix}:asset:{n}")
+                if name:
+                    n += 1
+                    return f"{pre}_assets/{name}{post}"
+            return f"{pre}{_html.escape(base_url + s, quote=True)}{post}"  # absolute fallback
+        return m.group(0)  # external / already-absolute URL - leave as-is
+
+    return _IMG_SRC_RE.sub(repl, html), n
+
+
+def _fetch_asset(bs, path: str, dest_dir: Path, manifest: Manifest, key: str) -> str | None:
+    try:
+        r = bs._raw_get(path)
+        if r.status_code != 200 or not r.content:
+            log.debug("asset %s -> HTTP %s", path, r.status_code)
+            return None
+        name = slugify(unquote(path.split("?")[0].split("/")[-1]) or "image", max_len=80)
+        if "." not in name:
+            ext = mimetypes.guess_extension(
+                (r.headers.get("Content-Type") or "").split(";")[0].strip()) or ".bin"
+            name += ext
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = _dedupe(dest_dir / name)
+        dest.write_bytes(r.content)
+        manifest.record(key, last_modified=None, local=dest, extra={"kind": "asset"})
+        log.debug("  asset:  %s (%d bytes)", dest.name, len(r.content))
+        return dest.name
+    except Exception as exc:  # noqa: BLE001
+        log.debug("asset fetch failed %s: %s", path, exc)
+        return None
+
+
+def _dedupe(p: Path) -> Path:
+    if not p.exists():
+        return p
+    n = 2
+    while (c := p.with_name(f"{p.stem} ({n}){p.suffix}")).exists():
+        n += 1
+    return c
 
 def _walk_module(
     bs: Brightspace,
@@ -318,17 +563,27 @@ def _write_link(dir_here: Path, title: str, url: str, *, dry_run: bool) -> Path 
     return dest
 
 
+def _rel(value, base: Path):
+    if not value:
+        return value
+    p = Path(value)
+    if not p.is_absolute():
+        return value
+    try:
+        return str(p.relative_to(base))
+    except ValueError:
+        return value
+
+
 def _relativize(nodes: list[dict], base: Path) -> None:
-    """Rewrite every node's local_path to be relative to the course folder, so
-    the whole folder stays portable (renamable / movable)."""
+    """Rewrite stored file paths to be relative to the course folder, so the
+    whole folder stays portable (renamable / movable)."""
     for n in nodes:
-        lp = n.get("local_path")
-        if lp:
-            p = Path(lp)
-            try:
-                n["local_path"] = str(p.relative_to(base)) if p.is_absolute() else lp
-            except ValueError:
-                pass
+        n["local_path"] = _rel(n.get("local_path"), base)
+        d = n.get("description")
+        if isinstance(d, dict):
+            d["html"] = _rel(d.get("html"), base)
+            d["md"] = _rel(d.get("md"), base)
         _relativize(n.get("children", []), base)
 
 
@@ -355,6 +610,15 @@ def _render_md(course: Course, index: list[dict], depth: int = 0) -> str:
     return "".join(_render_md_node(n, depth) for n in index)
 
 
+def _desc_block(node: dict, pad: str) -> str:
+    d = node.get("description")
+    if not isinstance(d, dict) or not d.get("text"):
+        return ""
+    body = "\n".join(f"{pad}  > {ln}" if ln else f"{pad}  >"
+                     for ln in d["text"].splitlines())
+    return body + "\n"
+
+
 def _render_md_node(node: dict, depth: int) -> str:
     pad = "  " * depth
     if node["type"] == "module":
@@ -362,13 +626,16 @@ def _render_md_node(node: dict, depth: int) -> str:
         if node.get("hidden"):
             line += " _(hidden)_"
         line += "\n"
+        line += _desc_block(node, pad)
         return line + "".join(_render_md_node(c, depth + 1) for c in node["children"])
     # topic
     label = node["title"]
     lp = node.get("local_path")
-    if node.get("topic_type") == TOPIC_LINK:
-        return f"{pad}- [{label}]({node.get('source_url', '')}) (link)\n"
-    if lp:
-        rel = Path(lp).name
-        return f"{pad}- {label} -> `{rel}`\n"
-    return f"{pad}- {label} _(not downloaded)_\n"
+    tt = node.get("topic_type")
+    if tt == TOPIC_LINK or tt == "link":
+        line = f"{pad}- [{label}]({node.get('source_url', '')}) (link)\n"
+    elif lp:
+        line = f"{pad}- {label} -> `{Path(lp).name}`\n"
+    else:
+        line = f"{pad}- {label} _(not downloaded)_\n"
+    return line + _desc_block(node, pad)

@@ -107,9 +107,10 @@ def run_sync(
                 st = sync_content(bs, course, cdir, manifest, force=force, dry_run=dry_run, video_opts=vopts)
 
                 log.info("  content: %d new, %d updated, %d unchanged, %d links, "
-                        "%d embeds, %d videos, %d errors",
+                        "%d text blocks, %d images, %d embeds, %d videos, %d errors",
                         st.downloaded, st.updated, st.skipped, st.links,
-                        st.embeds, st.videos, st.errors + st.video_errors)
+                        st.descriptions, st.assets, st.embeds, st.videos,
+                        st.errors + st.video_errors)
                 out.file_errors += st.errors + st.video_errors
                 out.errors.extend(st.error_detail)
             if "grades" in sections and cfg.includes_section("grades"):
