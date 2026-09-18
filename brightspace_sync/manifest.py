@@ -18,6 +18,7 @@ MANIFEST_NAME = ".bs_manifest.json"
 # manifest-key prefix -> which sync section owns it
 SECTION_PREFIX = {
     "video:": "videos",
+    "transcript:": "transcripts",
     "topic:": "content",
     "moddesc:": "content",    # module description text/html
     "topicdesc:": "content",  # topic description text/html
@@ -69,6 +70,12 @@ class Manifest:
     # Item Tracking ----------------------------------
     def touch(self, key: str) -> None:
         self.touched.add(key)
+
+    def touch_prefix(self, prefix: str) -> None:
+        """Keep everything filed under `prefix` alive through --prune. Used when
+        a parent item was skipped as unchanged, so the children it owns (a
+        description's images, say) were never re-fetched and so never touched."""
+        self.touched.update(k for k in self.entries if k.startswith(prefix))
 
     def unchanged(self, key: str, *, last_modified: str | None) -> bool:
         ent = self.entries.get(key)

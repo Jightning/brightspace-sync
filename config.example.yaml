@@ -25,6 +25,12 @@ include:
   # is bundled, so nothing extra to install. When false you still get a working
   # .url shortcut and a browser-openable .html for each video.
   videos: false
+  # Write a "<name> - transcript.md" beside each lecture video. Uses the
+  # captions the video already ships with; when it has none, falls back to
+  # transcribing it on this computer, which needs the optional extra:
+  #     pip install "brightspace-sync[transcribe]"
+  # Same thing as the --transcribe flag on `sync`.
+  transcripts: false
 
 # Course selection ------------------
 courses:
@@ -72,3 +78,8 @@ prune: false # delete local files that were removed in Brightspace when true
 video_quality: 1080   # capped resolution
 video_rate_limit: ""  # eg "3M" = 3 MB/s cap. Empty means use full bandwidth
 video_timeout: 0      # seconds to allow per video before giving up. 0 = no limit
+
+# Transcript config (only matters when transcripts are on AND a video has no
+# captions of its own, so the local speech recognition fallback kicks in)
+transcribe_model: base   # tiny | base | small | medium | large-v3 - bigger = slower, better
+# transcribe_language: en  # skip language detection

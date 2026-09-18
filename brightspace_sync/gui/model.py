@@ -12,7 +12,8 @@ from ..config import (Config, CourseRule, MapEntry, _dir_str, app_dir)
 from ..enrollments import Course
 from ..util import slugify
 
-SECTIONS = ("content", "grades", "news", "assignments", "calendar", "videos")
+SECTIONS = ("content", "grades", "news", "assignments", "calendar", "videos",
+            "transcripts")
 
 
 @dataclass
@@ -43,8 +44,8 @@ class SetupModel:
     chrome_profile: str = ""
     data_dir: str = "bs_data"
     include: dict = field(default_factory=lambda: {
-        "content": True, "grades": True, "news": True,
-        "assignments": True, "calendar": False, "videos": False})
+        "content": True, "grades": True, "news": True, "assignments": True,
+        "calendar": False, "videos": False, "transcripts": False})
     sync_all: bool = True                       # True -> courses.mode: all
     courses: List[CourseChoice] = field(default_factory=list)
     merges: List[MergeGroup] = field(default_factory=list)
@@ -68,8 +69,7 @@ class SetupModel:
         m.browser = cfg.browser
         m.chrome_profile = cfg.chrome_profile or ""
         m.data_dir = _dir_str(cfg.data_dir)
-        m.include = {k: cfg.includes_section(k) for k in
-                     ("content", "grades", "news", "assignments", "calendar", "videos")}
+        m.include = {k: cfg.includes_section(k) for k in SECTIONS}
         m.request_delay_seconds = cfg.request_delay_seconds
         m.max_retries = cfg.max_retries
         m.prune = cfg.prune
@@ -114,8 +114,7 @@ class SetupModel:
         cfg.log_dir = cfg.data_dir / "logs"
         cfg.cookies_txt_path = cfg.data_dir / "cookies.txt"
 
-        cfg.include = {k: bool(self.include.get(k, False)) for k in
-                       ("content", "grades", "news", "assignments", "calendar", "videos")}
+        cfg.include = {k: bool(self.include.get(k, False)) for k in SECTIONS}
         cfg.request_delay_seconds = float(self.request_delay_seconds)
         cfg.max_retries = int(self.max_retries)
         cfg.prune = bool(self.prune)

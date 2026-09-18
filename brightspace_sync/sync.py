@@ -18,6 +18,7 @@ from .manifest import Manifest
 from .mapping import resolve_placements
 from .media import VideoOpts
 from .news import sync_news
+from .transcribe import TranscribeOpts
 from .util import log, now_iso
 
 class SyncOutcome:
@@ -52,6 +53,7 @@ def run_sync(
     dry_run: bool = False,
     prune: bool = False,
     skip_videos: bool = False,
+    transcribe: bool = False,
     on_progress: Optional[ProgressCb] = None,
     should_stop: Optional[Callable[[], bool]] = None,
     interactive: bool = False,
@@ -127,17 +129,27 @@ def run_sync(
             timeout=cfg.video_timeout,
             archive=cdir / ".video-archive.txt",
         )
+        want_transcripts = transcribe or cfg.includes_section("transcripts")
+        topts = TranscribeOpts(
+            enabled=want_transcripts,
+            model=cfg.transcribe_model,
+            language=cfg.transcribe_language,
+        )
 
         try:
             if "content" in sections and cfg.includes_section("content"):
-                st = sync_content(bs, course, cdir, manifest, force=force, dry_run=dry_run, video_opts=vopts)
+                st = sync_content(bs, course, cdir, manifest, force=force,
+                                  dry_run=dry_run, video_opts=vopts,
+                                  transcribe_opts=topts)
 
                 log.info("  content: %d new, %d updated, %d unchanged, %d links, "
-                        "%d text blocks, %d images, %d embeds, %d videos, %d errors",
+                        "%d text blocks, %d images, %d embeds, %d videos, "
+                        "%d transcripts, %d errors",
                         st.downloaded, st.updated, st.skipped, st.links,
                         st.descriptions, st.assets, st.embeds, st.videos,
-                        st.errors + st.video_errors)
-                out.file_errors += st.errors + st.video_errors
+                        st.transcripts,
+                        st.errors + st.video_errors + st.transcript_errors)
+                out.file_errors += st.errors + st.video_errors + st.transcript_errors
                 out.errors.extend(st.error_detail)
             if "grades" in sections and cfg.includes_section("grades"):
                 sync_grades(bs, course, cdir, manifest, dry_run=dry_run)
@@ -149,7 +161,11 @@ def run_sync(
                 sync_calendar(bs, course, cdir, manifest, dry_run=dry_run)
 
             if do_prune:
-                prune_sections = set(sections) | ({"videos"} if want_videos else set())
+                prune_sections = set(sections)
+                if want_videos:
+                    prune_sections.add("videos")
+                if want_transcripts:
+                    prune_sections.add("transcripts")
                 gone = manifest.prune(prune_sections, dry_run=dry_run)
                 for p in gone:
                     log.info("  %s %s", "would remove" if dry_run else "removed",

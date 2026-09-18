@@ -41,6 +41,7 @@ _KNOWN_TOP = {
     "base_url", "browser", "chrome_profile", "data_dir", "courses_dir",
     "cookies_txt_path", "request_delay_seconds", "max_retries", "prune",
     "video_rate_limit", "video_quality", "video_timeout",
+    "transcribe_model", "transcribe_language",
     "include", "courses",
 }
 _KNOWN_COURSES = {"mode", "allow", "ignore", "map"}
@@ -92,6 +93,8 @@ class Config:
     video_rate_limit: str = "" # throttle video downloads, empty means full speed
     video_quality: int | None = 1080 # capped video resolution, None/"best" means best available
     video_timeout: int = 7200 # seconds per video before giving up, 0 means no limit
+    transcribe_model: str = "base" # faster-whisper size used when a video has no captions
+    transcribe_language: str | None = None # force a transcript language, None means autodetect
     include: dict[str, bool] = field(default_factory=dict) # enabled content sections
     courses_mode: str = "allowlist" # 'allowlist' | 'all'
     allow: list[CourseRule] = field(default_factory=list) # courses included
@@ -238,6 +241,9 @@ def load_config(path_str: str | None = None) -> Config:
     vq = raw.get("video_quality", 1080)
     cfg.video_quality = None if str(vq).strip().lower() in ("", "0", "best", "none") else int(vq)
     cfg.video_timeout = int(raw.get("video_timeout", cfg.video_timeout) or 0)
+    cfg.transcribe_model = str(raw.get("transcribe_model", cfg.transcribe_model) or "base")
+    tl = raw.get("transcribe_language")
+    cfg.transcribe_language = str(tl) if tl else None
 
     inc = raw.get("include") or {}
     cfg.include = {
@@ -247,6 +253,7 @@ def load_config(path_str: str | None = None) -> Config:
         "assignments": bool(inc.get("assignments", True)),
         "calendar": bool(inc.get("calendar", False)),
         "videos": bool(inc.get("videos", False)),
+        "transcripts": bool(inc.get("transcripts", False)),
     }
 
     courses: dict[Any, list[Any]] | None = raw.get("courses") or {}
@@ -318,6 +325,9 @@ def config_to_yaml_dict(cfg: Config) -> dict:
     data["video_quality"] = cfg.video_quality if cfg.video_quality else "best"
     data["video_rate_limit"] = cfg.video_rate_limit
     data["video_timeout"] = cfg.video_timeout
+    data["transcribe_model"] = cfg.transcribe_model
+    if cfg.transcribe_language:
+        data["transcribe_language"] = cfg.transcribe_language
     return data
 
 

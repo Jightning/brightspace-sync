@@ -284,6 +284,7 @@ def cmd_sync(args) -> int:
         dry_run=args.dry_run,
         prune=args.prune,
         skip_videos=args.skip_videos,
+        transcribe=args.transcribe,
         interactive=_interactive(),
     )
 
@@ -355,6 +356,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="delete local files that no longer exist in Brightspace")
     sp.add_argument("--skip-videos", action="store_true",
                     help="don't download videos this run (overrides include.videos)")
+    sp.add_argument("--transcribe", action="store_true",
+                    help="write a .md transcript next to each lecture video "
+                         "(uses the publisher's captions when there are any, "
+                         "otherwise local speech recognition)")
     sp.add_argument("--dry-run", action="store_true",
                     help="show what would happen without writing")
     sp.add_argument("--notify-on-auth-failure", action="store_true",

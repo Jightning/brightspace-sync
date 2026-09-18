@@ -32,6 +32,7 @@ from .client import Brightspace
 from .download import download_to
 from .enrollments import Course
 from .manifest import Manifest
+from .transcribe import TranscribeOpts, transcribe
 from .util import html_to_text, log, now_iso, slugify
 
 TOPIC_FILE = 1
@@ -54,6 +55,8 @@ class Stats:
     embeds: int = 0
     videos: int = 0
     video_errors: int = 0
+    transcripts: int = 0
+    transcript_errors: int = 0
     descriptions: int = 0   # module/topic rich-text blocks saved
     assets: int = 0         # images pulled out of that rich text
     error_detail: list[str] = field(default_factory=list)
@@ -83,6 +86,7 @@ class _Ctx:
     force: bool
     dry_run: bool
     video_opts: "media.VideoOpts | None"
+    transcribe_opts: "TranscribeOpts | None"
     base_url: str
 
 
@@ -95,6 +99,7 @@ def sync_content(
     force: bool,
     dry_run: bool,
     video_opts: "media.VideoOpts | None" = None,
+    transcribe_opts: "TranscribeOpts | None" = None,
 ) -> Stats:
     """Walk the whole content tree and mirror it locally.
 
@@ -104,10 +109,14 @@ def sync_content(
     stats = Stats()
     content_root = course_dir / "Content"
     ou = course.id
-    ctx = _Ctx(force, dry_run, video_opts, bs.base)
+    ctx = _Ctx(force, dry_run, video_opts, transcribe_opts, bs.base)
     index: list[dict] = []
 
-    toc = bs.get_json(bs.le_unstable(f"/{ou}/content/toc"), default=None)
+    # loadDescription=true is what makes the TOC return each *module's* rich
+    # text; without it every module comes back with Description: null and a
+    # text-only module (a schedule table, say) leaves nothing on disk.
+    toc = bs.get_json(bs.le_unstable(f"/{ou}/content/toc"),
+                      params={"loadDescription": "true"}, default=None)
     if isinstance(toc, dict) and isinstance(toc.get("Modules"), list):
         log.debug("using unstable TOC (%d root modules)", len(toc["Modules"]))
         for m in toc["Modules"]:
@@ -120,7 +129,7 @@ def sync_content(
         roots = bs.get_json(bs.le(f"/{ou}/content/root/"), default=[]) or []
         for module in roots:
             node = _walk_module(bs, ou, module, content_root, ["Content"], manifest,
-                                stats, force=force, dry_run=dry_run, video_opts=video_opts)
+                                stats, ctx)
             if node:
                 index.append(node)
 
@@ -219,9 +228,8 @@ def _handle_toc_topic(bs, ou, t, dir_here, path_parts, manifest, stats, ctx: _Ct
         return node
     manifest.entries.setdefault(key, {}).update({"kind": "file", "title": title})
     if Path(res.path).suffix.lower() in (".html", ".htm"):
-        _handle_embed(res.path, tid, ou, ctx.base_url, node, manifest, stats,
-                      title=title, last_mod=last_mod, video_opts=ctx.video_opts,
-                      dry_run=ctx.dry_run)
+        _handle_embed(res.path, tid, ou, node, manifest, stats, ctx,
+                      title=title, last_mod=last_mod)
     return node
 
 
@@ -234,7 +242,9 @@ def _save_description(bs, ou, desc, *, dir_here: Path, base_name: str, manifest:
     if not html and not text:
         return None
 
-    body_text = text or html_to_text(html)
+    # The API's own Text field flattens a table to one cell per line, so when
+    # there is a table let html_to_text render it as a Markdown table instead.
+    body_text = html_to_text(html) if "<table" in html.lower() else (text or html_to_text(html))
     md_path = dir_here / f"{base_name}.md"
     html_path = dir_here / f"{base_name}.html"
 
@@ -245,6 +255,7 @@ def _save_description(bs, ou, desc, *, dir_here: Path, base_name: str, manifest:
     # Unchanged since last run? Don't rewrite files or re-fetch images.
     if not ctx.force and manifest.unchanged(key, last_modified=last_modified):
         manifest.touch(key)
+        manifest.touch_prefix(f"{key}:asset:")   # its images weren't re-fetched
         stats.descriptions += 1
         return {"text": body_text,
                 "md": str(md_path) if md_path.exists() else None,
@@ -349,10 +360,7 @@ def _walk_module(
     path_parts: list[str],
     manifest: Manifest,
     stats: Stats,
-    *,
-    force: bool,
-    dry_run: bool,
-    video_opts: "media.VideoOpts | None" = None,
+    ctx: _Ctx,
 ) -> dict | None:
     """For each child of a module, determines if it's a topic or a module, and processes into a node accordingly."""
     mod_id = module.get("Id")
@@ -381,14 +389,12 @@ def _walk_module(
 
     for child in children:
         if _is_module(child):
-            sub = _walk_module(bs, ou, child, dir_here, here, manifest, stats,
-                               force=force, dry_run=dry_run, video_opts=video_opts)
+            sub = _walk_module(bs, ou, child, dir_here, here, manifest, stats, ctx)
             if sub:
                 node["children"].append(sub)
         else:
             topic_node = _handle_topic(bs, ou, child, dir_here, here, manifest,
-                                       stats, force=force, dry_run=dry_run,
-                                       video_opts=video_opts)
+                                       stats, ctx)
             if topic_node:
                 node["children"].append(topic_node)
     return node
@@ -401,10 +407,7 @@ def _handle_topic(
     path_parts: list[str],
     manifest: Manifest,
     stats: Stats,
-    *,
-    force: bool,
-    dry_run: bool,
-    video_opts: "media.VideoOpts | None" = None,
+    ctx: _Ctx,
 ) -> dict | None:
     topic_id = child.get("Id")
     if topic_id is None:
@@ -431,7 +434,7 @@ def _handle_topic(
 
     # Link topic
     if ttype == TOPIC_LINK or (url.startswith("http") and ttype != TOPIC_FILE):
-        local = _write_link(dir_here, title, url, dry_run=dry_run)
+        local = _write_link(dir_here, title, url, dry_run=ctx.dry_run)
         node["local_path"] = str(local) if local else None
         stats.links += 1
         manifest.record(key, last_modified=last_mod, local=local or dir_here,
@@ -451,8 +454,8 @@ def _handle_topic(
         manifest=manifest,
         key=key,
         last_modified=last_mod,
-        force=force,
-        dry_run=dry_run,
+        force=ctx.force,
+        dry_run=ctx.dry_run,
         prefer_name=prefer,
     )
 
@@ -461,7 +464,8 @@ def _handle_topic(
         res = download_to(
             bs, url,
             dest_dir=dir_here, fallback_name=fallback, manifest=manifest, key=key,
-            last_modified=last_mod, force=force, dry_run=dry_run, prefer_name=prefer,
+            last_modified=last_mod, force=ctx.force, dry_run=ctx.dry_run,
+            prefer_name=prefer,
         )
 
     node["local_path"] = str(res.path)
@@ -471,9 +475,8 @@ def _handle_topic(
     manifest.entries.setdefault(key, {}).update({"kind": "file", "title": title})
 
     if res.action != "error" and Path(res.path).suffix.lower() in (".html", ".htm"):
-        _handle_embed(res.path, topic_id, ou, bs.base, node, manifest, stats,
-                      title=title, last_mod=last_mod, video_opts=video_opts,
-                      dry_run=dry_run)
+        _handle_embed(res.path, topic_id, ou, node, manifest, stats, ctx,
+                      title=title, last_mod=last_mod)
     return node
 class _VideoProgress:
     """Throttled progress logger for the yt-dlp API path."""
@@ -497,11 +500,12 @@ class _VideoProgress:
                      human_size(total))
 
 
-def _handle_embed(html_path, topic_id, ou, base_url, node, manifest, stats, *,
-                  title, last_mod, video_opts, dry_run) -> None:
+def _handle_embed(html_path, topic_id, ou, node, manifest, stats, ctx: _Ctx, *,
+                  title, last_mod) -> None:
     """If a downloaded .html topic is just an embedded player, make it usable:
     write a .url pointer, rewrite the page for online viewing, and (if enabled)
-    download the actual media file."""
+    download the actual media file and/or its transcript."""
+    base_url, video_opts, dry_run = ctx.base_url, ctx.video_opts, ctx.dry_run
     p = Path(html_path)
     try:
         raw = p.read_text("utf-8", errors="replace")
@@ -520,6 +524,7 @@ def _handle_embed(html_path, topic_id, ou, base_url, node, manifest, stats, *,
         "embed_url": info.embed_url,
         "stream_page": stream_page,
         "video_file": None,
+        "transcript_file": None,
     }
     stats.embeds += 1
     if dry_run:
@@ -531,27 +536,62 @@ def _handle_embed(html_path, topic_id, ou, base_url, node, manifest, stats, *,
     manifest.record(f"topic:{topic_id}", last_modified=last_mod, local=p,
                     extra={"kind": "embed", "provider": info.provider, "title": title})
 
-    if not (video_opts and video_opts.enabled):
+    video_file: Path | None = None
+    if video_opts and video_opts.enabled:
+        vkey = f"video:{topic_id}"
+        log.info("  video: %s ...", title)
+        status, video_file = media.download_video(
+            info, dest_dir=p.parent, base_name=p.stem, base_url=base_url,
+            opts=video_opts, progress=_VideoProgress(title),
+        )
+        if video_file:
+            node["media"]["video_file"] = video_file.name
+            manifest.record(vkey, last_modified=last_mod, local=video_file,
+                            extra={"kind": "video", "provider": info.provider})
+            if status == "ok":
+                stats.videos += 1
+        elif status == "no-ytdlp":
+            log.warning("  include.videos is on but yt-dlp is unavailable - reinstall "
+                        "brightspace-sync (it should be bundled)")
+        else:
+            manifest.touch(vkey)  # keep any earlier copy safe from --prune
+            stats.video_errors += 1
+            log.warning("  video download failed for %s (%s)", title, status)
+
+    _handle_transcript(info, p, topic_id, node, manifest, stats, ctx,
+                       title=title, last_mod=last_mod, video_file=video_file)
+
+
+def _handle_transcript(info, html_path: Path, topic_id, node, manifest, stats,
+                       ctx: _Ctx, *, title, last_mod, video_file: Path | None) -> None:
+    """Save the video's transcript as Markdown next to it (--transcribe)."""
+    opts = ctx.transcribe_opts
+    if not (opts and opts.enabled):
         return
-    vkey = f"video:{topic_id}"
-    log.info("  video: %s ...", title)
-    status, path = media.download_video(
-        info, dest_dir=p.parent, base_name=p.stem, base_url=base_url,
-        opts=video_opts, progress=_VideoProgress(title),
+    tkey = f"transcript:{topic_id}"
+    log.info("  transcript: %s ...", title)
+    status, path = transcribe(
+        info, dest_dir=html_path.parent, base_name=html_path.stem, title=title,
+        base_url=ctx.base_url, video_path=video_file, opts=opts, force=ctx.force,
     )
     if path:
-        node["media"]["video_file"] = path.name
-        manifest.record(vkey, last_modified=last_mod, local=path,
-                        extra={"kind": "video", "provider": info.provider})
-        if status == "ok":
-            stats.videos += 1
-    elif status == "no-ytdlp":
-        log.warning("  include.videos is on but yt-dlp is unavailable - reinstall "
-                    "brightspace-sync (it should be bundled)")
+        node["media"]["transcript_file"] = path.name
+        manifest.record(tkey, last_modified=last_mod, local=path,
+                        extra={"kind": "transcript", "source": status})
+        if status in ("captions", "asr"):
+            stats.transcripts += 1
+        return
+
+    manifest.touch(tkey)  # keep any earlier transcript safe from --prune
+    if status == "no-whisper":
+        log.warning("  no captions for %s, and local transcription is unavailable "
+                    "- install it with: pip install \"brightspace-sync[transcribe]\"",
+                    title)
+    elif status == "no-captions":
+        log.info("  no transcript available for %s", title)
     else:
-        manifest.touch(vkey)  # keep any earlier copy safe from --prune
-        stats.video_errors += 1
-        log.warning("  video download failed for %s (%s)", title, status)
+        stats.transcript_errors += 1
+        log.warning("  transcript failed for %s (%s)", title, status)
 
 
 def _write_link(dir_here: Path, title: str, url: str, *, dry_run: bool) -> Path | None:

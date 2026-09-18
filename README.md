@@ -116,6 +116,8 @@ brightspace-sync sync  # main retrieval
 --force               # re-download even if unchanged
 --prune               # deletes local files removed in Brightspace (`prune: true` in config)
 --dry-run             # just shows, writes nothing
+--skip-videos         # don't download videos this run (overrides include.videos)
+--transcribe          # write a .md transcript next to each lecture video
 ```
 
 If you want an alias (so you just run with `bssync sync`):
@@ -170,6 +172,32 @@ and its `<name>.html` is rewritten into a small page with a `<base href>` + dire
 so it opens in a browser.
 
 If you set `include.videos: true`, the actual `<name>.mp4` is downloaded next to the `.html`.
+
+### Transcripts
+
+`brightspace-sync sync --transcribe` (or `include.transcripts: true`) writes a
+`<name> - transcript.md` next to each video topic: a short header saying where
+the text came from, then timestamped paragraphs.
+
+Two sources are tried, cheapest first:
+
+1. **The video's own captions.** Kaltura/BoilerCast, YouTube and Panopto
+   usually serve a caption track for the entry, and yt-dlp can fetch it without
+   downloading the video. This is the normal case: fast, free, and as accurate
+   as whoever wrote the captions.
+2. **Local speech recognition**, for videos with no caption track. This needs
+   the optional extra:
+
+   ```bash
+   pip install "brightspace-sync[transcribe]"
+   ```
+
+   It runs [faster-whisper](https://github.com/SYSTRAN/faster-whisper) on your
+   own machine — nothing is uploaded. The audio comes from the `.mp4` if
+   `include.videos` already saved one, otherwise an audio-only copy is fetched
+   to a temp folder and deleted afterwards. Set `transcribe_model` in the config
+   to trade speed for accuracy. Without the extra installed, videos that have
+   captions still get transcripts; the rest are skipped with a warning.
 
 ## Debugging
 

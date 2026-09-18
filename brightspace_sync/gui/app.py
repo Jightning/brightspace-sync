@@ -30,6 +30,9 @@ _SECTIONS = [
     ("calendar", "Calendar", "Calendar events and their dates."),
     ("videos", "Lecture videos", "Recorded lecture videos. These are large and slow to "
                                  "download — leave off unless you really want them."),
+    ("transcripts", "Video transcripts", "A Markdown transcript beside each lecture video. "
+                                         "Uses the captions the video already has; falls back "
+                                         "to transcribing it on this computer."),
 ]
 
 def _open_folder(path: Path) -> None:

@@ -27,6 +27,12 @@ dependencies = [
   "pywebview>=5.3,<7",  # sign-in window fallback when the browser-cookie read fails; <7 = opt in to the next major deliberately (get_cookies() shape has moved before)
 ]
 
+[project.optional-dependencies]
+# Local speech recognition, used by --transcribe only when a video has no
+# captions of its own. Left out of the default install because it pulls in a
+# ~100 MB inference runtime and downloads a model on first use.
+transcribe = ["faster-whisper>=1.0"]
+
 [project.scripts]
 brightspace-sync = "brightspace_sync.cli:main"
 
