@@ -42,7 +42,7 @@ _KNOWN_TOP = {
     "cookies_txt_path", "request_delay_seconds", "max_retries", "prune",
     "video_rate_limit", "video_quality", "video_timeout",
     "transcribe_model", "transcribe_language",
-    "include", "courses",
+    "include", "courses", "download_limits", "external_downloads",
 }
 _KNOWN_COURSES = {"mode", "allow", "ignore", "map"}
 
@@ -101,6 +101,8 @@ class Config:
     ignore: list[CourseRule] = field(default_factory=list) # courses excluded
     mapping: list[MapEntry] = field(default_factory=list) # folder-name / merge rules
     source_path: Path | None = None # config file path that was loaded
+    download_limits: dict = field(default_factory=lambda: {"file_mib": 25, "run_mib": 250, "storage_mib": 1024})
+    external_downloads: dict = field(default_factory=lambda: {"enabled": True, "allowed_hosts": ["purdue.simplesyllabus.com"]})
 
     # course matching
     def wants_course(self, *, ou_id: int, name: str, code: str) -> bool:
@@ -236,6 +238,22 @@ def load_config(path_str: str | None = None) -> Config:
     cfg.request_delay_seconds = float(raw.get("request_delay_seconds", cfg.request_delay_seconds))
     cfg.max_retries = int(raw.get("max_retries", cfg.max_retries))
     cfg.prune = bool(raw.get("prune", cfg.prune))
+    limits = raw.get("download_limits", {})
+    if not isinstance(limits, dict) or set(limits) - set(cfg.download_limits):
+        raise SystemExit(f"{path}: invalid download_limits")
+    for key, value in limits.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise SystemExit(f"{path}: download_limits.{key} must be a positive integer")
+    cfg.download_limits.update(limits)
+    external = raw.get("external_downloads", {})
+    if not isinstance(external, dict) or set(external) - set(cfg.external_downloads):
+        raise SystemExit(f"{path}: invalid external_downloads")
+    cfg.external_downloads.update(external)
+    if not isinstance(cfg.external_downloads['enabled'], bool) or not isinstance(cfg.external_downloads['allowed_hosts'], list):
+        raise SystemExit(f"{path}: invalid external_downloads settings")
+    for host in cfg.external_downloads['allowed_hosts']:
+        if not isinstance(host, str) or not host or any(c in host for c in '/:@*?#'):
+            raise SystemExit(f"{path}: allowed_hosts must contain exact host names")
 
     cfg.video_rate_limit = str(raw.get("video_rate_limit", "") or "")
     vq = raw.get("video_quality", 1080)
@@ -322,6 +340,8 @@ def config_to_yaml_dict(cfg: Config) -> dict:
     data["request_delay_seconds"] = cfg.request_delay_seconds
     data["max_retries"] = cfg.max_retries
     data["prune"] = cfg.prune
+    data["download_limits"] = dict(cfg.download_limits)
+    data["external_downloads"] = dict(cfg.external_downloads)
     data["video_quality"] = cfg.video_quality if cfg.video_quality else "best"
     data["video_rate_limit"] = cfg.video_rate_limit
     data["video_timeout"] = cfg.video_timeout

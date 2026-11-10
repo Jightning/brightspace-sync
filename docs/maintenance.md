@@ -25,8 +25,13 @@ each critical path has a second way through.
 
 ## Brightspace API
 
-- Uses the versioned `/d2l/api/{le,lp}/1.0/…` routes (GET only). D2L keeps old
-  versions for years.
+- Discovers versions at `/d2l/api/{le,lp}/versions/`, whose `SupportedVersions`
+  contains strings, and uses the numerically latest 1.x version (GET only).
+  Falls back to 1.0 if discovery is unavailable.
+- Calendar filters use UTC timestamps with milliseconds (`...29.000Z`): Purdue
+  returns HTTP 400 when that component is omitted. Calendar results are
+  `ObjectListPage` objects: follow `Next` URLs without reapplying query parameters.
+  The shared paging helper also supports enrollment bookmarks and legacy arrays.
 - **One exception:** content traversal prefers `/d2l/api/le/unstable/{ou}/content/toc`
   (the only route that returns module/topic rich text). `content.py` falls back
   to the stable `content/root` + `structure/` crawl if that route changes or
@@ -34,6 +39,50 @@ each critical path has a second way through.
 - `whoami` (`lp/1.0/users/whoami`) is the auth check in two places now
   (`auth._verify` and the sign-in window probe). A 404 is reported as
   "your institution may have disabled the LMS API".
+- Content sync also retrieves `/{ou}/overview` and, when present,
+  `/{ou}/overview/attachment`. A 404 means absent; a 403 means permission denied
+  for this optional resource and preserves previous overview files from pruning.
+  A 401 still stops the run as expired authentication. Overviews have no change
+  timestamp, so refresh them on every run.
+- `navigation.py` extracts course navbar anchors and `d2l-menu-item-link` items
+  from `/d2l/le/content/{ou}/Home`, deduplicating desktop/mobile copies. Markup
+  changes can affect discovery: missing/unavailable navigation logs a warning
+  and preserves previous shortcuts. `external.py` can now resolve Simple Syllabus
+  launches and download its syllabus PDF; unsupported tools remain online links.
+  The resolver follows the supplied iframe `launchLocation`, the two hidden LTI
+  forms (`/ui/lti-login`, `/ui/lti-launch`), and `sso-redirect?doc_url=...`. It never
+  executes JavaScript or submits arbitrary forms. The provider's `doc-pdf` route
+  can return JSON containing an exact, signed S3 URL; validate that target against
+  the provider's tenant-specific syllabus storage prefix and never persist it.
+- `external.py` also accepts direct documents from configured exact HTTPS hosts.
+  Each redirect is checked against the host policy and public IP resolution;
+  document type and signature are validated before committing a file. Provider
+  sessions are separate from the Brightspace session. Network errors must not
+  print full URLs or response bodies containing launch credentials.
+- `limits.py` owns one budget per sync, shared by regular downloads, external
+  files, images, media, captions and temporary audio. `DownloadStopped` deliberately
+  inherits `BaseException`: broad optional-download exception handlers must not
+  swallow a declined cap and continue through a fallback. `run_sync` catches it,
+  stops before pruning, and saves the in-progress course manifest in `finally`.
+  The CLI approval callback requires a terminal; the app sends a request to the
+  Tk main thread and waits on a reply queue, with cancellation unblocking it.
+  Approvals are ephemeral and scoped to a run or file, never persisted in config.
+- yt-dlp must use the hooked in-process/native path when a budget is active.
+  Merged video size is checked before merging; unmetered external protocols and
+  automatic installation of an uncached Whisper model stop explicitly. Keep
+  temporary-audio/caption hooks and tests in sync with the video path. Metadata
+  parsing has an independent 2 MiB bound. Storage estimates are conservative
+  (existing data plus transfer bytes and merge workspace); indexes/logs are not
+  file-transfer bytes. Do not add a silent max-filesize option to yt-dlp.
+- Overview and navigation manifest entries belong to `content` for `--prune`.
+  External copies use `external:` keys in the same section. Failed or disabled
+  downloads retain earlier copies; unavailable navigation preserves them too.
+  Index nodes use `offline_path` for downloaded copies and retain `source_url`.
+  `Content/index.html` links saved files relative to the course folder, so the
+  folder remains movable. Description HTML must not use a remote `<base>` tag:
+  that would send downloaded `_assets/` images back to the server. Existing
+  description files are regenerated with the updated wrapper on change or
+  `--force`.
 
 ## Distribution
 

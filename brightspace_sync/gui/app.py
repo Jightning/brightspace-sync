@@ -591,6 +591,10 @@ class App(tk.Tk):
                     self._on_connect_failed(msg[1])
                 elif kind == "sync_done":
                     self._on_sync_finished(outcome=msg[1])
+                elif kind == "download_limit":
+                    approved = messagebox.askyesno("Download paused — limit reached", msg[1],
+                                                  default=messagebox.NO, parent=self)
+                    msg[2].put(approved)
                 elif kind == "sync_crashed":
                     self._on_sync_finished(error=msg[1])
         except queue.Empty:

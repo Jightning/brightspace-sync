@@ -24,6 +24,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from .limits import DownloadSkipped
 from .media import MediaInfo
 from .util import log
 
@@ -43,6 +44,7 @@ class TranscribeOpts:
     enabled: bool = False
     model: str = "base"           # faster-whisper size: tiny|base|small|medium|large-v3
     language: str | None = None   # None = let the model detect it
+    budget: object = None
 
 
 # Public entry point -----------------------------------------------------
@@ -67,14 +69,22 @@ def transcribe(
         return "exists", dest
 
     try:
-        cues, lang = _fetch_captions(info, base_url)
+        cues, lang = (_fetch_captions(info, base_url, opts.budget) if opts.budget
+                      else _fetch_captions(info, base_url))
+    except DownloadSkipped as exc:
+        log.info("  %s", exc)
+        return "declined", None
     except Exception as exc:  # noqa: BLE001 - a bad caption file is not fatal
         log.debug("caption fetch failed for %s: %s", title, exc)
         cues, lang = [], None
 
     source = "publisher captions"
     if not cues:
-        status, cues, lang = _speech_to_text(info, base_url, video_path, opts)
+        try:
+            status, cues, lang = _speech_to_text(info, base_url, video_path, opts)
+        except DownloadSkipped as exc:
+            log.info("  %s", exc)
+            return "declined", None
         if status:
             return status, None
         source = f"speech recognition (faster-whisper {opts.model})"
@@ -85,7 +95,7 @@ def transcribe(
 
 
 # 1. Publisher captions --------------------------------------------------
-def _fetch_captions(info: MediaInfo, base_url: str) -> tuple[list, str | None]:
+def _fetch_captions(info: MediaInfo, base_url: str, budget=None) -> tuple[list, str | None]:
     """Ask yt-dlp for the entry's caption track (no video download)."""
     try:
         import yt_dlp
@@ -103,7 +113,10 @@ def _fetch_captions(info: MediaInfo, base_url: str) -> tuple[list, str | None]:
             "quiet": True, "no_warnings": True, "noprogress": True,
             "retries": 2, "socket_timeout": 30,
         }
-        with yt_dlp.YoutubeDL(y) as ydl:  # type: ignore[attr-defined]
+        from .limits import progress_hook, youtube_dl_class
+        y['progress_hooks'] = [progress_hook(budget)]
+        y['external_downloader'] = 'native'
+        with youtube_dl_class(yt_dlp, budget)(y) as ydl:
             ydl.download([info.ytdlp_target()])
 
         # yt-dlp names the file cap.<lang>.<FORMAT>, and the format casing
@@ -171,13 +184,13 @@ def _speech_to_text(info: MediaInfo, base_url: str, video_path: Path | None,
         return _run_whisper(WhisperModel, video_path, opts)
 
     with tempfile.TemporaryDirectory(prefix="bs-audio-") as tmp:
-        audio = _download_audio(info, base_url, Path(tmp))
+        audio = _download_audio(info, base_url, Path(tmp), opts.budget)
         if not audio:
             return "no-captions", [], None
         return _run_whisper(WhisperModel, audio, opts)
 
 
-def _download_audio(info: MediaInfo, base_url: str, tmpdir: Path) -> Path | None:
+def _download_audio(info: MediaInfo, base_url: str, tmpdir: Path, budget=None) -> Path | None:
     try:
         import yt_dlp
     except ImportError:
@@ -189,8 +202,13 @@ def _download_audio(info: MediaInfo, base_url: str, tmpdir: Path) -> Path | None
         "quiet": True, "no_warnings": True, "noprogress": True,
         "retries": 3, "socket_timeout": 30,
     }
+    from .limits import progress_hook, youtube_dl_class
+    y['progress_hooks'] = [progress_hook(budget)]
+    y['concurrent_fragment_downloads'] = 1
+    y['hls_prefer_native'] = True
+    y['external_downloader'] = 'native'
     try:
-        with yt_dlp.YoutubeDL(y) as ydl:  # type: ignore[attr-defined]
+        with youtube_dl_class(yt_dlp, budget)(y) as ydl:
             ydl.download([info.ytdlp_target()])
     except Exception as exc:  # noqa: BLE001 - caller reports it as 'no audio'
         log.debug("audio-only download failed: %s", exc)
@@ -201,7 +219,15 @@ def _download_audio(info: MediaInfo, base_url: str, tmpdir: Path) -> Path | None
 
 def _run_whisper(WhisperModel, audio: Path, opts: TranscribeOpts) -> tuple[str, list, str | None]:
     try:
-        model = WhisperModel(opts.model, device="auto", compute_type="int8")
+        if opts.budget is not None:
+            from .limits import DownloadStopped
+            try:
+                model = WhisperModel(opts.model, device="auto", compute_type="int8", local_files_only=True)
+            except Exception:
+                raise DownloadStopped("Capped sync cannot install an uncached speech model safely. "
+                                      "Install/cache the selected faster-whisper model separately, then re-run sync.") from None
+        else:
+            model = WhisperModel(opts.model, device="auto", compute_type="int8")
         segments, meta = model.transcribe(str(audio), language=opts.language,
                                           vad_filter=True)
         cues = [(seg.start, seg.end, seg.text.strip())

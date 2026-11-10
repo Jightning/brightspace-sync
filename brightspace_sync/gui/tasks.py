@@ -97,6 +97,16 @@ class SyncWorker(threading.Thread):
     def stop(self) -> None:
         self._cancel.set()
 
+    def _confirm_download_limit(self, request) -> bool:
+        answer = queue.Queue(maxsize=1)
+        self._q.put(("download_limit", request.message, answer))
+        while not self._cancel.is_set():
+            try:
+                return bool(answer.get(timeout=0.2))
+            except queue.Empty:
+                continue
+        return False
+
     def run(self) -> None:
         try:
             outcome = run_sync(
@@ -104,6 +114,7 @@ class SyncWorker(threading.Thread):
                 on_progress=lambda frac, msg: self._q.put(("progress", frac, msg)),
                 should_stop=self._cancel.is_set,
                 interactive=True,
+                confirm_download_limit=self._confirm_download_limit,
             )
         except Exception as exc:  # noqa: BLE001
             self._q.put(("sync_crashed", f"{type(exc).__name__}: {exc}"))

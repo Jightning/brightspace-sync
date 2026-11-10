@@ -152,8 +152,11 @@ bs_data/courses/
   ECE 270 - Digital System Design/  # name from courses.map (else auto)
     course.json  grades.json  grades.csv
     Content/
+      index.html                    # open in a browser: saved files + online tools
       content_index.json            # every topic + its path (relative), parse this
       content_index.md              # readable outline
+      Course overview/              # overview text (.md/.html) + attached syllabus/file
+      Course links/*.url            # navigation tools, including external Syllabus
       <Module>/<file(s)>, <link>.url
     Announcements/*.md
     Assignments/<name>/instructions.md + attachments
@@ -162,6 +165,51 @@ bs_data/courses/
     Lecture/   course.json  Content/ ...  .bs_manifest.json
     Lab/       course.json  Content/ ...  .bs_manifest.json
 ```
+
+Open a course's `Content/index.html` to browse your download. Saved files open
+offline; tools requiring the website are marked **online**. Simple Syllabus's
+Brightspace sign-in handoff is supported: its syllabus PDF is saved under
+`Content/Course links/Online downloads/`, and the index opens that local PDF.
+Other supported documents linked from Content are saved in the corresponding
+module's `Online downloads/` folder. The original online shortcut is retained.
+Unavailable or unsupported sources remain online links with a warning; a login
+page is never saved as a syllabus. Authentication tokens and signed storage URLs
+are kept only in memory.
+
+These additions run with the existing `content` section; there is no new config
+switch. An overview attachment is downloaded when Brightspace provides one.
+Since overviews have no modification timestamp, their text and attachments are
+checked again on each run. A course without an overview can still have a Syllabus
+link. This does not export interactive tools such as quizzes or discussions.
+
+External downloads use exact HTTPS host names in `external_downloads.allowed_hosts`
+(default: `purdue.simplesyllabus.com`). Add trusted document hosts to fetch direct
+PDF, TXT, MD, CSV, DOCX, XLSX or PPTX links, including download URLs without an
+extension when the response identifies the document type. Arbitrary scripts,
+archives and installers are not downloaded. Every redirect is validated; private
+network destinations are blocked. Brightspace cookies are not sent to document
+hosts. Simple Syllabus can authorize only an exact temporary PDF URL in its own
+syllabus storage path. Set `external_downloads.enabled: false` to disable these
+additional downloads while keeping existing copies.
+
+File, run and storage limits default to **25 MiB / 250 MiB / 1 GiB**, configured
+under `download_limits` in `config.example.yaml`. They also cover existing file
+and attachment downloads, description images, videos, captions and temporary
+audio. The CLI or app pauses and asks whether to exceed the relevant limit.
+**No on a file limit skips only that file** and continues syncing. It will ask
+again on the next sync; the rejection is not saved. No on a run or storage limit
+stops the sync, preserves completed files and saves the manifest. Unattended runs
+skip files exceeding the file limit and stop on run or storage limits. Approvals apply only to the current run (file
+limits are approved per file); they do not rewrite your settings.
+
+Storage accounting includes existing files under `data_dir` plus incoming file
+bytes, conservatively retaining space for temporary replacements and video
+merges. It does not delete older files to make room. Downloads preserve 64 MiB of
+free disk space. yt-dlp runs in-process with limit hooks; unsupported unmetered
+media protocols stop explicitly. With capped sync, speech recognition requires
+the selected model to be cached beforehand, so an automatic model installation
+cannot bypass the limits. Small API responses, generated indexes and logs are
+not part of the per-run file-transfer quota.
 
 ### Videos
 

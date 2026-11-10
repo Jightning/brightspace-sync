@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .limits import DownloadSkipped
 from .util import log
 
 _MARKER = "brightspace_sync:embed"
@@ -160,6 +161,7 @@ class VideoOpts:
     max_height: int | None = 1080  # cap resolution; None = best available
     timeout: int = 7200            # seconds per video (binary path only); 0 = none
     archive: Path | None = None    # yt-dlp download-archive file (resume / dedup)
+    budget: object = None
 
 _RATE_RE = re.compile(r"^\s*([\d.]+)\s*([kmg]?)i?b?\s*$", re.I)
 
@@ -210,12 +212,23 @@ def download_video(
     archive = str(opts.archive or (dest_dir / ".video-archive.txt"))
 
     binary = find_ytdlp()
-    if binary:
-        rc, err = _via_binary(binary, target, out_tmpl, base_url, archive, opts)
-    else:
-        rc, err = _via_api(target, out_tmpl, base_url, archive, opts, progress)
-        if rc is None:
-            return "no-ytdlp", None
+    before = set(dest_dir.iterdir())
+    try:
+        if binary and opts.budget is None:
+            rc, err = _via_binary(binary, target, out_tmpl, base_url, archive, opts)
+        else:
+            rc, err = _via_api(target, out_tmpl, base_url, archive, opts, progress)
+            if rc is None:
+                return "no-ytdlp", None
+    except BaseException as exc:
+        for path in dest_dir.iterdir():
+            if (path not in before and path.is_file() and path.name.startswith(base_name + '.')
+                    and ('.part' in path.name or path.suffix == '.ytdl')):
+                path.unlink(missing_ok=True)
+        if isinstance(exc, DownloadSkipped):
+            log.info("  %s", exc)
+            return "declined", None
+        raise
 
     got = _existing_video(dest_dir, base_name)
     if rc == 0:
@@ -252,11 +265,17 @@ def _via_api(target, out_tmpl, base_url, archive, opts: VideoOpts, progress):
     fmt = _fmt(opts.max_height)
     if fmt:
         y["format"] = fmt
-    if progress:
-        y["progress_hooks"] = [progress]
+    from .limits import progress_hook, youtube_dl_class, postprocess_hook
+    y["progress_hooks"] = [progress_hook(opts.budget)] + ([progress] if progress else [])
+    y['postprocessor_hooks'] = [postprocess_hook(opts.budget)]
+    if opts.budget is not None:
+        # Keep transfers serial so one shared budget can pause reliably.
+        y['concurrent_fragment_downloads'] = 1
+        y['hls_prefer_native'] = True
+        y['external_downloader'] = 'native'
 
     try:
-        with yt_dlp.YoutubeDL(y) as ydl: # type: ignore
+        with youtube_dl_class(yt_dlp, opts.budget)(y) as ydl:
             return ydl.download([target]), None
     except Exception as exc:  # noqa: BLE001 - DownloadError etc.
         last = (str(exc).strip().splitlines() or ["download failed"])[-1]

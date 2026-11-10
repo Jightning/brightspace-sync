@@ -15,6 +15,8 @@ from .content import sync_content
 from .enrollments import Course, list_all_courses, select_courses
 from .grades import sync_grades
 from .manifest import Manifest
+from .limits import DownloadBudget, DownloadStopped, MIB
+from .external import ExternalDownloads
 from .mapping import resolve_placements
 from .media import VideoOpts
 from .news import sync_news
@@ -57,6 +59,7 @@ def run_sync(
     on_progress: Optional[ProgressCb] = None,
     should_stop: Optional[Callable[[], bool]] = None,
     interactive: bool = False,
+    confirm_download_limit=None,
 ) -> SyncOutcome:
     out = SyncOutcome()
     do_prune = prune or cfg.prune
@@ -73,6 +76,11 @@ def run_sync(
         return out
 
     bs = Brightspace(session, cfg)
+    bs.download_budget = DownloadBudget(
+        cfg.data_dir, *(cfg.download_limits[k] * MIB for k in ('file_mib', 'run_mib', 'storage_mib')),
+        confirm=confirm_download_limit, should_stop=stop)
+    bs.external_options = cfg.external_downloads
+    bs.external_downloads = ExternalDownloads(bs, cfg.external_downloads)
 
     # Pick Courses
     _report(on_progress, 0.02, "Reading your course list...")
@@ -128,12 +136,14 @@ def run_sync(
             max_height=cfg.video_quality,
             timeout=cfg.video_timeout,
             archive=cdir / ".video-archive.txt",
+            budget=bs.download_budget,
         )
         want_transcripts = transcribe or cfg.includes_section("transcripts")
         topts = TranscribeOpts(
             enabled=want_transcripts,
             model=cfg.transcribe_model,
             language=cfg.transcribe_language,
+            budget=bs.download_budget,
         )
 
         try:
@@ -144,10 +154,10 @@ def run_sync(
 
                 log.info("  content: %d new, %d updated, %d unchanged, %d links, "
                         "%d text blocks, %d images, %d embeds, %d videos, "
-                        "%d transcripts, %d errors",
+                        "%d transcripts, %d external files, %d errors",
                         st.downloaded, st.updated, st.skipped, st.links,
                         st.descriptions, st.assets, st.embeds, st.videos,
-                        st.transcripts,
+                        st.transcripts, st.external_files,
                         st.errors + st.video_errors + st.transcript_errors)
                 out.file_errors += st.errors + st.video_errors + st.transcript_errors
                 out.errors.extend(st.error_detail)
@@ -171,6 +181,11 @@ def run_sync(
                     log.info("  %s %s", "would remove" if dry_run else "removed",
                              p.name)
                 out.pruned += len(gone)
+        except DownloadStopped as exc:
+            out.stopped = True
+            out.errors.append(str(exc))
+            log.error("%s", exc)
+            break
         except AuthExpired as exc:
             out.auth_failed = True
             out.errors.append(str(exc))

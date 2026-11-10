@@ -17,6 +17,9 @@ MANIFEST_NAME = ".bs_manifest.json"
 
 # manifest-key prefix -> which sync section owns it
 SECTION_PREFIX = {
+    "external:": "content",
+    "navigation:": "content",
+    "overview:": "content",
     "video:": "videos",
     "transcript:": "transcripts",
     "topic:": "content",
@@ -79,7 +82,7 @@ class Manifest:
 
     def unchanged(self, key: str, *, last_modified: str | None) -> bool:
         ent = self.entries.get(key)
-        if not ent:
+        if not ent or ent.get('retry_download'):
             return False
         local = self.abs_path(ent)
         if not local.exists():

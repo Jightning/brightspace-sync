@@ -20,18 +20,19 @@ Plus:
 from __future__ import annotations
 
 import html as _html
+import hashlib
 import json
-import mimetypes
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urljoin, quote
 
 from . import media
 from .client import Brightspace
 from .download import download_to
 from .enrollments import Course
 from .manifest import Manifest
+from .navigation import navigation_links
 from .transcribe import TranscribeOpts, transcribe
 from .util import html_to_text, log, now_iso, slugify
 
@@ -58,6 +59,7 @@ class Stats:
     transcripts: int = 0
     transcript_errors: int = 0
     descriptions: int = 0   # module/topic rich-text blocks saved
+    external_files: int = 0
     assets: int = 0         # images pulled out of that rich text
     error_detail: list[str] = field(default_factory=list)
 
@@ -66,7 +68,7 @@ class Stats:
             self.downloaded += 1
         elif action == "updated":
             self.updated += 1
-        elif action in ("skipped", "dry-run"):
+        elif action in ("skipped", "dry-run", "declined"):
             self.skipped += 1
         elif action == "error":
             self.errors += 1
@@ -110,6 +112,8 @@ def sync_content(
     content_root = course_dir / "Content"
     ou = course.id
     ctx = _Ctx(force, dry_run, video_opts, transcribe_opts, bs.base)
+    if not getattr(getattr(bs, 'external_downloads', None), 'enabled', False):
+        manifest.touch_prefix('external:')
     index: list[dict] = []
 
     # loadDescription=true is what makes the TOC return each *module's* rich
@@ -133,10 +137,103 @@ def sync_content(
             if node:
                 index.append(node)
 
+    overview = _sync_overview(bs, ou, content_root, manifest, stats, ctx)
+    if overview:
+        index.insert(0, overview)
+    navigation = _sync_navigation(bs, ou, content_root, manifest, stats, ctx)
+    if navigation:
+        index.append(navigation)
+
     if not index:
         log.info("  no content modules visible")
-    _write_index(course, content_root, index, dry_run=dry_run)
+    _write_index(course, content_root, index, dry_run=dry_run, base_url=bs.base)
     return stats
+
+
+def _sync_navigation(bs, ou, content_root, manifest, stats, ctx):
+    page_url = f"{ctx.base_url}/d2l/le/content/{ou}/Home"
+    response = bs._raw_get(page_url, allow_forbidden=True)
+    try:
+        if response.status_code in (403, 404):
+            log.warning("  course navigation unavailable (HTTP %s); keeping earlier shortcuts",
+                        response.status_code)
+            manifest.touch_prefix("navigation:")
+            manifest.touch_prefix("external:")
+            return None
+        response.raise_for_status()
+        links = navigation_links(response.text, page_url)
+    finally:
+        response.close()
+    if not links:
+        log.warning("  no course navigation links found; keeping earlier shortcuts")
+        manifest.touch_prefix("navigation:")
+        manifest.touch_prefix("external:")
+        return None
+    children = []
+    for title, url in links:
+        digest = hashlib.sha256(url.encode()).hexdigest()[:12]
+        # The suffix also prevents two tools with the same title overwriting each other.
+        local = _write_link(content_root / "Course links", f"{title} - {digest}",
+                            url, dry_run=ctx.dry_run)
+        manifest.record(f"navigation:{digest}", last_modified=None, local=local,
+                        extra={"kind": "link", "title": title, "url": url})
+        node = {"type": "topic", "title": title, "topic_type": "link",
+                "source_url": url, "local_path": str(local)}
+        _download_online(bs, node, content_root / "Course links", manifest, stats, ctx)
+        children.append(node)
+        stats.links += 1
+    return {"type": "module", "title": "Course links", "children": children}
+
+
+def _download_online(bs, node, directory, manifest, stats, ctx):
+    downloader = getattr(bs, 'external_downloads', None)
+    if downloader is None:
+        return
+    path = downloader.fetch(node.get('source_url', ''), node['title'], directory,
+                            manifest, force=ctx.force, dry_run=ctx.dry_run)
+    if path:
+        node['offline_path'] = str(path)
+        stats.external_files += 1
+
+
+def _sync_overview(bs, ou, content_root, manifest, stats, ctx):
+    response = bs._raw_get(bs.le(f"/{ou}/overview"), allow_forbidden=True)
+    try:
+        if response.status_code == 404:
+            return None
+        if response.status_code == 403:
+            log.warning("  course overview is not permitted; keeping earlier files")
+            manifest.touch_prefix("overview:")
+            return None
+        response.raise_for_status()
+        overview = response.json()
+    finally:
+        response.close()
+    if not isinstance(overview, dict):
+        raise ValueError("course overview must be a JSON object")
+    directory = content_root / "Course overview"
+    # Overview has no modification date, so re-fetch rather than caching forever.
+    fresh = _Ctx(True, ctx.dry_run, ctx.video_opts, ctx.transcribe_opts, ctx.base_url)
+    description = _save_description(
+        bs, ou, overview.get("Description"), dir_here=directory, base_name="Overview",
+        manifest=manifest, key="overview:description", last_modified=None,
+        ctx=fresh, stats=stats, label="Course overview")
+    if description and not ctx.dry_run:
+        manifest.record("overview:markdown", last_modified=None,
+                        local=directory / "Overview.md")
+    children = []
+    if overview.get("HasAttachment"):
+        source = bs.le(f"/{ou}/overview/attachment")
+        result = download_to(bs, source, dest_dir=directory,
+                             fallback_name="Overview attachment", manifest=manifest,
+                             key="overview:attachment", last_modified=None,
+                             force=True, dry_run=ctx.dry_run)
+        stats.add(result.action, f"Overview attachment: {result.error}" if result.error else "")
+        children.append({"type": "topic", "title": "Overview attachment",
+                         "local_path": str(result.path) if result.action != "error" else None,
+                         "source_url": ctx.base_url + source})
+    return {"type": "module", "title": "Course overview", "description": description,
+            "children": children}
 
 
 # Table of Contents (TOC) based traversal -------------------
@@ -207,6 +304,7 @@ def _handle_toc_topic(bs, ou, t, dir_here, path_parts, manifest, stats, ctx: _Ct
         stats.links += 1
         manifest.record(key, last_modified=last_mod, local=local or dir_here,
                         extra={"kind": "link", "url": target, "title": title})
+        _download_online(bs, node, dir_here, manifest, stats, ctx)
         return node
 
     prefer = (url.split("?")[0].split("/")[-1] or None) if url else None
@@ -223,6 +321,8 @@ def _handle_toc_topic(bs, ou, t, dir_here, path_parts, manifest, stats, ctx: _Ct
 
     node["local_path"] = str(res.path)
     stats.add(res.action, f"{title}: {res.error}" if res.error else "")
+    if res.action == "declined":
+        return node
     if res.action == "error":
         log.warning("  could not download topic %s (%s): %s", tid, title, res.error)
         return node
@@ -253,7 +353,8 @@ def _save_description(bs, ou, desc, *, dir_here: Path, base_name: str, manifest:
         return {"text": body_text}
 
     # Unchanged since last run? Don't rewrite files or re-fetch images.
-    if not ctx.force and manifest.unchanged(key, last_modified=last_modified):
+    if (not ctx.force and manifest.unchanged(key, last_modified=last_modified)
+            and not (manifest.get(key) or {}).get('retry_assets')):
         manifest.touch(key)
         manifest.touch_prefix(f"{key}:asset:")   # its images weren't re-fetched
         stats.descriptions += 1
@@ -266,12 +367,12 @@ def _save_description(bs, ou, desc, *, dir_here: Path, base_name: str, manifest:
     result = {"md": str(md_path), "text": body_text, "html": None}
 
     if html:
-        page, n_assets = _pull_assets(html, dir_here, bs, ctx.base_url, manifest, key)
+        page, n_assets, declined = _pull_assets(html, dir_here, bs, ctx.base_url, manifest, key)
         stats.assets += n_assets
         html_path.write_text(_wrap_html(label, page, ctx.base_url), "utf-8")
         result["html"] = str(html_path)
         manifest.record(key, last_modified=last_modified, local=html_path,
-                        extra={"kind": "description", "title": label})
+                        extra={"kind": "description", "title": label, "retry_assets": declined})
     else:
         manifest.record(key, last_modified=last_modified, local=md_path,
                         extra={"kind": "description", "title": label})
@@ -282,9 +383,13 @@ def _save_description(bs, ou, desc, *, dir_here: Path, base_name: str, manifest:
 
 
 def _wrap_html(label: str, body: str, base_url: str) -> str:
+    # A remote <base> makes even downloaded _assets resolve online. Keep local
+    # images relative, and resolve document links individually instead.
+    body = re.sub(r'''(?i)(\bhref\s*=\s*)(["'])(.*?)\2''',
+                  lambda m: m[1] + m[2] + _html.escape(
+                      urljoin(base_url + "/", _html.unescape(m[3])), quote=True) + m[2], body)
     return (
         f'<!doctype html><meta charset="utf-8"><title>{_html.escape(label)}</title>'
-        f'<base href="{_html.escape(base_url)}/">'
         "<style>body{font:15px/1.6 system-ui,-apple-system,sans-serif;margin:2rem;"
         "max-width:820px}img{max-width:100%;height:auto}</style>"
         f"<h1>{_html.escape(label)}</h1>\n{body}\n"
@@ -292,18 +397,19 @@ def _wrap_html(label: str, body: str, base_url: str) -> str:
 
 
 def _pull_assets(html: str, dir_here: Path, bs, base_url: str, manifest: Manifest,
-                 key_prefix: str) -> tuple[str, int]:
+                 key_prefix: str) -> tuple[str, int, bool]:
     """Download <img> sources that live on the Brightspace host into _assets/ and
     rewrite them to relative paths; make any others absolute so the page still
     renders online."""
     if len(html) > _MAX_DESC_HTML:
-        return html, 0
+        return html, 0, False
     assets_dir = dir_here / "_assets"
     n = 0
+    declined = False
 
     def repl(m: "re.Match[str]") -> str:
         # groups: pre = '<img ... src="', src = the url, post = '"...>'
-        nonlocal n
+        nonlocal n, declined
         pre, src, post = m.group(1), m.group(2), m.group(3)
         s = _html.unescape(src).strip()
         if s.startswith("data:") or not s:
@@ -312,36 +418,33 @@ def _pull_assets(html: str, dir_here: Path, bs, base_url: str, manifest: Manifes
             s = "https:" + s
         if s.startswith("/"):
             if n < _ASSET_CAP:
-                name = _fetch_asset(bs, s, assets_dir, manifest, f"{key_prefix}:asset:{n}")
+                name, skipped = _fetch_asset(bs, s, assets_dir, manifest, f"{key_prefix}:asset:{n}")
+                declined = declined or skipped
                 if name:
                     n += 1
                     return f"{pre}_assets/{name}{post}"
             return f"{pre}{_html.escape(base_url + s, quote=True)}{post}"  # absolute fallback
         return m.group(0)  # external / already-absolute URL - leave as-is
 
-    return _IMG_SRC_RE.sub(repl, html), n
+    page = _IMG_SRC_RE.sub(repl, html)
+    return page, n, declined
 
 
-def _fetch_asset(bs, path: str, dest_dir: Path, manifest: Manifest, key: str) -> str | None:
+def _fetch_asset(bs, path: str, dest_dir: Path, manifest: Manifest, key: str) -> tuple[str | None, bool]:
     try:
-        r = bs._raw_get(path)
-        if r.status_code != 200 or not r.content:
-            log.debug("asset %s -> HTTP %s", path, r.status_code)
-            return None
         name = slugify(unquote(path.split("?")[0].split("/")[-1]) or "image", max_len=80)
         if "." not in name:
-            ext = mimetypes.guess_extension(
-                (r.headers.get("Content-Type") or "").split(";")[0].strip()) or ".bin"
-            name += ext
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = _dedupe(dest_dir / name)
-        dest.write_bytes(r.content)
-        manifest.record(key, last_modified=None, local=dest, extra={"kind": "asset"})
-        log.debug("  asset:  %s (%d bytes)", dest.name, len(r.content))
-        return dest.name
+            name += ".bin"
+        result = download_to(bs, path, dest_dir=dest_dir, fallback_name=name,
+                             manifest=manifest, key=key, last_modified=None,
+                             force=True, dry_run=False, prefer_name=name)
+        if result.action in ('error', 'declined'):
+            return None, result.action == 'declined'
+        manifest.entries[key]['kind'] = 'asset'
+        return result.path.name, False
     except Exception as exc:  # noqa: BLE001
         log.debug("asset fetch failed %s: %s", path, exc)
-        return None
+        return None, False
 
 
 def _dedupe(p: Path) -> Path:
@@ -439,6 +542,7 @@ def _handle_topic(
         stats.links += 1
         manifest.record(key, last_modified=last_mod, local=local or dir_here,
                         extra={"kind": "link", "url": url, "title": title})
+        _download_online(bs, node, dir_here, manifest, stats, ctx)
         return node
 
     # File topic
@@ -470,6 +574,8 @@ def _handle_topic(
 
     node["local_path"] = str(res.path)
     stats.add(res.action, f"{title}: {res.error}" if res.error else "")
+    if res.action == "declined":
+        return node
     if res.action == "error":
         log.warning("  could not download topic %s (%s): %s", topic_id, title, res.error)
     manifest.entries.setdefault(key, {}).update({"kind": "file", "title": title})
@@ -550,6 +656,9 @@ def _handle_embed(html_path, topic_id, ou, node, manifest, stats, ctx: _Ctx, *,
                             extra={"kind": "video", "provider": info.provider})
             if status == "ok":
                 stats.videos += 1
+        elif status == "declined":
+            manifest.touch(vkey)
+            stats.skipped += 1
         elif status == "no-ytdlp":
             log.warning("  include.videos is on but yt-dlp is unavailable - reinstall "
                         "brightspace-sync (it should be bundled)")
@@ -583,7 +692,9 @@ def _handle_transcript(info, html_path: Path, topic_id, node, manifest, stats,
         return
 
     manifest.touch(tkey)  # keep any earlier transcript safe from --prune
-    if status == "no-whisper":
+    if status == "declined":
+        stats.skipped += 1
+    elif status == "no-whisper":
         log.warning("  no captions for %s, and local transcription is unavailable "
                     "- install it with: pip install \"brightspace-sync[transcribe]\"",
                     title)
@@ -619,7 +730,15 @@ def _relativize(nodes: list[dict], base: Path) -> None:
     """Rewrite stored file paths to be relative to the course folder, so the
     whole folder stays portable (renamable / movable)."""
     for n in nodes:
+        if n.get('offline_path'):
+            n['offline_path'] = _rel(n['offline_path'], base)
+            if not (base / n['offline_path']).is_file():
+                n['offline_path'] = None
         n["local_path"] = _rel(n.get("local_path"), base)
+        # Older indexes can retain the intended filename after a failed download.
+        # Offer the source link instead of a broken local-file link.
+        if n.get("local_path") and not (base / n["local_path"]).is_file():
+            n["local_path"] = None
         d = n.get("description")
         if isinstance(d, dict):
             d["html"] = _rel(d.get("html"), base)
@@ -627,7 +746,8 @@ def _relativize(nodes: list[dict], base: Path) -> None:
         _relativize(n.get("children", []), base)
 
 
-def _write_index(course: Course, content_root: Path, index: list[dict], *, dry_run: bool) -> None:
+def _write_index(course: Course, content_root: Path, index: list[dict], *, dry_run: bool,
+                 base_url: str = "") -> None:
     if dry_run:
         return
     content_root.mkdir(parents=True, exist_ok=True)
@@ -641,6 +761,40 @@ def _write_index(course: Course, content_root: Path, index: list[dict], *, dry_r
         json.dumps(payload, indent=2), "utf-8"
     )
     (content_root / "content_index.md").write_text(_render_md(course, index), "utf-8")
+    (content_root / "index.html").write_text(_render_html(course, index, base_url), "utf-8")
+
+
+def _render_html(course: Course, nodes: list[dict], base_url: str) -> str:
+    def local_href(path):
+        # Stored paths are relative to the course folder; this page is in Content/.
+        return "../" + quote(str(path).replace("\\", "/"), safe="/")
+
+    def render(node):
+        title = _html.escape(node["title"])
+        source = urljoin(base_url + "/", node.get("source_url") or "") if node.get("source_url") else None
+        href = source if node.get("topic_type") in (TOPIC_LINK, "link") else None
+        if node.get("local_path") and not href:
+            href = local_href(node["local_path"])
+        href = href or source
+        if node.get('offline_path'):
+            href = local_href(node['offline_path'])
+        label = f'<a href="{_html.escape(href, quote=True)}">{title}</a>' if href else title
+        if node.get('offline_path'):
+            label += f' (offline) — <a href="{_html.escape(source or "", quote=True)}">Online source</a>'
+        elif node.get("topic_type") in (TOPIC_LINK, "link") or (source and not node.get("local_path")):
+            label += " (online)"
+        desc = node.get("description") or {}
+        if desc.get("html") or desc.get("md"):
+            label += f' — <a href="{_html.escape(local_href(desc.get("html") or desc["md"]), quote=True)}">Read saved text</a>'
+        return "<li>" + label + ("<ul>" + "".join(render(c) for c in node["children"]) + "</ul>"
+                                  if node.get("children") else "") + "</li>"
+
+    return ('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
+            '<title>Course content</title><style>body{font:16px/1.6 system-ui;margin:2rem;max-width:70rem}'
+            'li{margin:.4rem 0}a{overflow-wrap:anywhere}</style>'
+            f'<h1>{_html.escape(course.name)}</h1><p>Saved files open offline. Links marked online '
+            'require an internet connection and may require Brightspace sign-in.</p><ul>'
+            + "".join(render(n) for n in nodes) + "</ul>")
 
 
 def _render_md(course: Course, index: list[dict], depth: int = 0) -> str:
@@ -672,10 +826,14 @@ def _render_md_node(node: dict, depth: int) -> str:
     label = node["title"]
     lp = node.get("local_path")
     tt = node.get("topic_type")
-    if tt == TOPIC_LINK or tt == "link":
+    if node.get('offline_path'):
+        line = f"{pad}- {label} -> `{node['offline_path']}` (offline); [online source]({node.get('source_url', '')})\n"
+    elif tt == TOPIC_LINK or tt == "link":
         line = f"{pad}- [{label}]({node.get('source_url', '')}) (link)\n"
     elif lp:
         line = f"{pad}- {label} -> `{Path(lp).name}`\n"
+    elif node.get("source_url"):
+        line = f"{pad}- [{label}]({node['source_url']}) _(online fallback)_\n"
     else:
         line = f"{pad}- {label} _(not downloaded)_\n"
     return line + _desc_block(node, pad)

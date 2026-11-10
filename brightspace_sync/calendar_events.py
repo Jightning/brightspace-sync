@@ -23,11 +23,11 @@ def sync_calendar(
     ou = course.id
     now = datetime.now(timezone.utc)
     params = {
-        "startDateTime": (now - timedelta(days=120)).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-        "endDateTime": (now + timedelta(days=240)).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        # Brightspace's UTCDateTime parser requires the milliseconds component.
+        "startDateTime": (now - timedelta(days=120)).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "endDateTime": (now + timedelta(days=240)).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
     }
-    events = bs.get_json(bs.le(f"/{ou}/calendar/events/myEvents/"),
-                         params=params, default=[]) or []
+    events = bs.paged(bs.le(f"/{ou}/calendar/events/myEvents/"), params=params)
     rows = []
     for e in events:
         rows.append({

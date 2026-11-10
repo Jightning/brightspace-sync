@@ -62,3 +62,25 @@ def test_relative_data_dir_written_when_under_app_dir(tmp_path, monkeypatch):
     cfg.data_dir = tmp_path / "bs_data"
     path = save_config(cfg, tmp_path / "config.yaml")
     assert "data_dir: bs_data" in path.read_text()
+
+
+def test_download_settings_survive_config_and_app_roundtrip(tmp_path):
+    from brightspace_sync.gui.model import SetupModel
+    cfg = Config(data_dir=tmp_path / 'data')
+    cfg.download_limits = {'file_mib': 12, 'run_mib': 123, 'storage_mib': 456}
+    cfg.external_downloads = {'enabled': False, 'allowed_hosts': ['docs.example.edu']}
+    got = _write_and_reload(cfg, tmp_path)
+    app_cfg = SetupModel.from_config(got, []).to_config()
+    assert app_cfg.download_limits == cfg.download_limits
+    assert app_cfg.external_downloads == cfg.external_downloads
+
+
+def test_download_config_rejects_unbounded_limits_and_wildcard_hosts(tmp_path):
+    import pytest
+    from brightspace_sync.config import load_config
+    path = tmp_path / 'config.yaml'
+    for text in ['download_limits: {file_mib: 0}', 'download_limits: {run_mib: -1}',
+                 'download_limits: {storage_mib: true}', 'external_downloads: {allowed_hosts: ["*.example.com"]}']:
+        path.write_text(text)
+        with pytest.raises(SystemExit):
+            load_config(str(path))

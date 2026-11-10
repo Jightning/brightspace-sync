@@ -34,10 +34,13 @@ class Brightspace:
         ver = "1.0"
 
         try:
-            data = self._raw_get(f"/d2l/api/versions/{product}").json()
-            supported = [v.get("Version", "") for v in data.get("SupportedVersions", [])]
+            response = self._raw_get(f"/d2l/api/{product}/versions/")
+            response.raise_for_status()
+            data = response.json()
+            supported = data.get("SupportedVersions", [])
             ones = sorted(
-                (v for v in supported if v.startswith("1.")),
+                (v for v in supported if isinstance(v, str) and v.startswith("1.")
+                 and v[2:].isdigit()),
                 key=lambda v: [int(p) for p in v.split(".") if p.isdigit()],
             )
             if ones:
@@ -75,7 +78,8 @@ class Brightspace:
 
         self._last_call = time.monotonic()
 
-    def _raw_get(self, path: str, *, params=None, stream=False) -> requests.Response:
+    def _raw_get(self, path: str, *, params=None, stream=False,
+                 allow_forbidden=False) -> requests.Response:
         """HTTP request to path"""
         url = path if path.startswith("http") else f"{self.base}{path}"
         attempt = 0
@@ -107,7 +111,7 @@ class Brightspace:
                 attempt += 1
                 continue
 
-            if response.status_code in (401, 403):
+            if response.status_code == 401 or (response.status_code == 403 and not allow_forbidden):
                 raise AuthExpired(
                     f"HTTP {response.status_code} on {path}.\n"
                     f"The browser session stopped being accepted. Re-open Brightspace to refresh it, then run again."
@@ -139,15 +143,31 @@ class Brightspace:
         return response
 
     def paged(self, path: str, *, params=None) -> Iterator[dict]:
-        """Iterate a bookmark-paged collection, and yields the chunked items."""
+        """Iterate bookmark pages, ObjectListPage Next URLs, or legacy arrays."""
         params = dict(params or {})
         seen_bookmarks: set[str] = set()
+        seen_urls: set[str] = set()
 
         while True:
             page = self.get_json(path, params=params, default={}) or {}
+            if isinstance(page, list):
+                yield from page
+                return
+            if not isinstance(page, dict):
+                raise BrightspaceError(f"invalid paged response from {path}")
             items = page.get("Items", page.get("Objects", []))
             for it in items:
                 yield it
+
+            next_url = page.get("Next")
+            if next_url:
+                if not isinstance(next_url, str) or next_url in seen_urls:
+                    raise BrightspaceError(f"invalid or repeated Next URL from {path}")
+                seen_urls.add(next_url)
+                path = next_url
+                # Next already contains the original filters and paging state.
+                params = {}
+                continue
 
             info = page.get("PagingInfo") or {}
             if not info.get("HasMoreItems"):

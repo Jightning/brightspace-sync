@@ -286,6 +286,7 @@ def cmd_sync(args) -> int:
         skip_videos=args.skip_videos,
         transcribe=args.transcribe,
         interactive=_interactive(),
+        confirm_download_limit=_confirm_download_limit if _interactive() else None,
     )
 
     if outcome.auth_failed:
@@ -297,6 +298,14 @@ def cmd_sync(args) -> int:
         return 1
     
     return 0
+
+
+def _confirm_download_limit(request) -> bool:
+    print("\nDownload paused: " + request.message)
+    try:
+        return input("Continue beyond this limit? [y/N] ").strip().lower() in ('y', 'yes')
+    except (EOFError, KeyboardInterrupt):
+        return False
 
 # Here are all the arguments for the cli
 def build_parser() -> argparse.ArgumentParser:

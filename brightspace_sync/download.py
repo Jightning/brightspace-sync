@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from .client import Brightspace
+from .limits import DownloadSkipped
 from .manifest import Manifest
 from .util import human_size, log, sha256_file, slugify
 
@@ -18,7 +19,7 @@ _CD_FILENAME = re.compile(r'filename\s*=\s*"([^"]+)"|filename\s*=\s*([^;]+)', re
 @dataclass
 class DownloadResult:
     path: Path
-    action: str # "downloaded" | "skipped" | "updated" | "dry-run" | "error"
+    action: str # "downloaded" | "skipped" | "updated" | "dry-run" | "declined" | "error"
     bytes: int = 0
     error: str | None = None
 
@@ -79,12 +80,18 @@ def download_to(
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     tmp: Path | None = None
+    resp = None
     try:
         resp = bs.get_stream(api_path)
         if resp.status_code == 404:
             resp.close()
             return DownloadResult(dest_dir / fallback_name, "error", error="404 not found")
         resp.raise_for_status()
+        budget = getattr(bs, 'download_budget', None)
+        transfer = budget.transfer(fallback_name, dest_dir) if budget else None
+        length = resp.headers.get('Content-Length', '')
+        if transfer and length.isdigit():
+            transfer.check_size(int(length))
 
         name = (
             _safe_name(prefer_name, fallback_name)
@@ -98,12 +105,22 @@ def download_to(
         with tmp.open("wb") as fh:
             for chunk in resp.iter_content(chunk_size=1 << 16):
                 if chunk:
+                    if transfer:
+                        transfer.consume(len(chunk))
                     fh.write(chunk)
                     total += len(chunk)
 
         resp.close()
         os.replace(tmp, dest)
         tmp = None
+    except DownloadSkipped as exc:
+        # Even a forced refresh of an otherwise unchanged file must be retried.
+        if prev:
+            prev['retry_download'] = True
+        _cleanup(tmp)
+        log.info("  %s", exc)
+        return DownloadResult(manifest.abs_path(prev) if prev else dest_dir / fallback_name,
+                              "declined")
     except Exception as exc:
         log.debug("download failed for %s: %s", api_path, exc)
         _cleanup(tmp)
@@ -111,6 +128,9 @@ def download_to(
     except BaseException: # Ctrl-C / SystemExit: leave no half-written file
         _cleanup(tmp)
         raise
+    finally:
+        if resp is not None:
+            resp.close()
 
     action = "updated" if prev else "downloaded"
     digest = sha256_file(dest)

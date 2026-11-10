@@ -57,6 +57,8 @@ class SetupModel:
     video_quality: str = "1080"  # "best" or an int as a string
     video_rate_limit: str = ""
     video_timeout: int = 0
+    download_limits: dict = field(default_factory=lambda: dict(Config().download_limits))
+    external_downloads: dict = field(default_factory=lambda: dict(Config().external_downloads))
 
     # non-id ignore rules from a hand-edited file (e.g. match: "Sandbox") - kept as-is
     extra_ignore: List[CourseRule] = field(default_factory=list)
@@ -76,6 +78,8 @@ class SetupModel:
         m.video_quality = "best" if not cfg.video_quality else str(cfg.video_quality)
         m.video_rate_limit = cfg.video_rate_limit
         m.video_timeout = cfg.video_timeout
+        m.download_limits = dict(cfg.download_limits)
+        m.external_downloads = dict(cfg.external_downloads)
         m.sync_all = cfg.courses_mode == "all"
         m.extra_ignore = [r for r in cfg.ignore if r.match and r.id is None]
 
@@ -122,6 +126,8 @@ class SetupModel:
         cfg.video_quality = None if vq in ("", "0", "best", "none") else int(vq)
         cfg.video_rate_limit = self.video_rate_limit.strip()
         cfg.video_timeout = int(self.video_timeout or 0)
+        cfg.download_limits = dict(self.download_limits)
+        cfg.external_downloads = dict(self.external_downloads)
 
         selected = [c for c in self.courses if c.selected]
         cfg.courses_mode = "all" if self.sync_all else "allowlist"

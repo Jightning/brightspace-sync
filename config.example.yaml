@@ -73,6 +73,25 @@ request_delay_seconds: 0.4   # delay between API calls
 max_retries: 4 # retries on 429 / 5xx
 prune: false # delete local files that were removed in Brightspace when true
 
+# Applies to existing file/attachment downloads and new external documents,
+# videos, caption tracks and temporary transcription audio. Positive MiB only.
+# Crossing a limit PAUSES for approval in the CLI/app. No stops the whole run;
+# unattended runs stop with an error. Approval lasts only for this run (or file).
+download_limits:
+  file_mib: 25
+  run_mib: 250
+  storage_mib: 1024
+
+# External documents are saved under Online downloads/ beside their source link.
+# Authentication launch support is currently limited to Simple Syllabus.
+# Direct PDF/TXT/MD/CSV/DOCX/XLSX/PPTX files can be fetched from exact allowed
+# HTTPS hosts. Add trusted document hosts here; wildcards are not accepted.
+external_downloads:
+  enabled: true
+  allowed_hosts:
+    - purdue.simplesyllabus.com
+#   - www.math.purdue.edu
+
 # Video config (only matters when include.videos is true)
 # modify if video downloading takes too long
 video_quality: 1080   # capped resolution
